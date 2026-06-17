@@ -1,9 +1,22 @@
 import { useState, useEffect, useRef } from "react";
 
 // ─── STORAGE ──────────────────────────────────────────────────────────────────
+// Free tier: localStorage (single device, offline-capable)
+// Pro tier: swap this object for Firebase/Supabase — UI code unchanged
 const store = {
-  async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
-  async set(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} }
+  async get(k) {
+    try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; }
+    catch { return null; }
+  },
+  async set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); }
+    catch (e) {
+      if (e.name === "QuotaExceededError") console.warn("Storage full — clear old data");
+    }
+  },
+  async remove(k) {
+    try { localStorage.removeItem(k); } catch {}
+  }
 };
 
 // ─── THEME ────────────────────────────────────────────────────────────────────
