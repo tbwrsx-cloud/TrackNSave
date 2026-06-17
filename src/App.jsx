@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 
+// ─── STORAGE ──────────────────────────────────────────────────────────────────
 const store = {
   async get(key) {
     try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; }
@@ -10,160 +11,191 @@ const store = {
   }
 };
 
-const INTERVALS = [10, 20, 30, 40, 50, 60, 70, 80, 90];
+// ─── THEME ────────────────────────────────────────────────────────────────────
+const C = {
+  bg: "#0a0d16", surface: "#111520", card: "#181e2e",
+  border: "#1f2844", borderLight: "#2a3554",
+  accent: "#f97316", green: "#22c55e", red: "#ef4444",
+  yellow: "#eab308", blue: "#3b82f6", cyan: "#06b6d4", purple: "#a855f7",
+  text: "#e8eaf0", muted: "#5a6480", dimmed: "#8892a8",
+};
 
-const SECTIONS = [
-  {
-    id: "engine_petrol", label: "Engine Bay — Petrol", icon: "⛽", engineType: "petrol",
-    items: [
-      { id: "ep1", name: "Engine Oil & Filter", schedule: [1,1,1,1,1,1,1,1,1], type: "R" },
-      { id: "ep2", name: "Drive Belts", schedule: [0,0,0,1,0,0,0,1,0], type: "I" },
-      { id: "ep3", name: "Air Cleaner Filter", schedule: [1,1,2,1,1,2,1,1,2], type: "C/R" },
-      { id: "ep4", name: "Battery Condition / Specific Gravity", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "ep5", name: "Throttle Body", schedule: [0,1,1,1,1,1,1,1,1], type: "C" },
-      { id: "ep6", name: "Spark Plugs", schedule: [0,0,0,1,0,0,0,1,0], type: "R" },
-      { id: "ep7", name: "Vacuum Hoses", schedule: [0,0,0,1,0,0,0,1,0], type: "I" },
-      { id: "ep8", name: "Brake / Clutch Fluid", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "ep9", name: "Engine Coolant", schedule: [1,1,1,1,1,1,1,1,2], type: "I/R", note: "Replace at 90k/6Y, then every 40k" },
-      { id: "ep10", name: "Manual Transaxle Fluid", schedule: [0,0,0,0,0,0,0,1,0], type: "I" },
-      { id: "ep11", name: "CVT Fluid", schedule: [0,0,0,0,0,0,0,0,0], type: "—", note: "No service under normal conditions" },
+// ─── VEHICLE LOGIC ────────────────────────────────────────────────────────────
+function getOilInterval(year) {
+  const y = parseInt(year);
+  if (y >= 2011) return 10000;
+  if (y >= 2000) return 7500;
+  return 5000;
+}
+
+function needsTimingBelt(year, fuel, timingType) {
+  if (timingType === "chain") return false;
+  if (timingType === "belt") return true;
+  if (fuel === "diesel") return false;
+  if (parseInt(year) >= 2015) return false;
+  return "unknown";
+}
+
+function addMonths(date, months) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+function getDaysUntil(dateStr) {
+  if (!dateStr) return null;
+  return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24));
+}
+
+function getKmUntilDue(item, currentOdo) {
+  if (!item.nextDueKm) return null;
+  return item.nextDueKm - currentOdo;
+}
+
+function getItemStatus(item, currentOdo) {
+  const kmLeft = item.nextDueKm ? getKmUntilDue(item, currentOdo) : null;
+  const daysLeft = item.nextDueDate ? getDaysUntil(item.nextDueDate) : null;
+  const relevant = kmLeft !== null ? kmLeft : daysLeft;
+  if (relevant === null) return "ok";
+  if (relevant < 0) return "overdue";
+  if (relevant < (item.nextDueKm ? 1000 : 14)) return "due-soon";
+  return "ok";
+}
+
+function generateSchedule(vehicle) {
+  const oilKm = getOilInterval(vehicle.year);
+  const hasBelt = needsTimingBelt(vehicle.year, vehicle.fuel, vehicle.timing);
+  const isOld = parseInt(vehicle.year) < 2005;
+  const today = new Date().toISOString().split("T")[0];
+
+  const items = [
+    { id: "oil", name: "Engine Oil & Filter", intervalKm: oilKm, intervalMonths: null, type: "replace", notes: `${oilKm / 1000}k km interval based on ${vehicle.year} model year`, category: "engine" },
+    { id: "airfilter", name: "Air Filter", intervalKm: 20000, intervalMonths: null, type: "inspect", notes: "Clean at 20k km · Replace at 40k km", category: "engine" },
+    { id: "cabinfilter", name: "Cabin Air Filter", intervalKm: 15000, intervalMonths: null, type: "clean", notes: "Clean at 15k km · Replace at 30k km", category: "cabin" },
+    { id: "brakefluid", name: "Brake Fluid", intervalKm: null, intervalMonths: 24, type: "replace", notes: "Replace every 2 years — absorbs moisture regardless of km", category: "brakes" },
+    { id: "coolant", name: "Engine Coolant", intervalKm: isOld ? 40000 : 60000, intervalMonths: null, type: "inspect", notes: `Inspect at ${isOld ? 40 : 60}k km · Replace at ${isOld ? 60 : 80}k km`, category: "engine" },
+    { id: "brakepads", name: "Brake Pads / Shoes", intervalKm: 30000, intervalMonths: null, type: "inspect", notes: "Check thickness — replace if under 3mm", category: "brakes" },
+    { id: "tyrerotation", name: "Tyre Rotation & Pressure", intervalKm: 10000, intervalMonths: null, type: "rotate", notes: "Rotate and check pressure + tread depth every 10k km", category: "tyres" },
+    { id: "battery", name: "Battery Health", intervalKm: null, intervalMonths: 12, type: "inspect", notes: "Check terminals, voltage, and electrolyte level annually", category: "electrical" },
+    { id: "wipers", name: "Wiper Blades", intervalKm: null, intervalMonths: 12, type: "replace", notes: "Replace annually or when smearing / streaking noticed", category: "cabin" },
+    { id: "drivebelts", name: "Drive Belts / Alternator Belt", intervalKm: 60000, intervalMonths: null, type: "inspect", notes: "Check for cracks, glazing, and tension at 60k km", category: "engine" },
+    { id: "fuelfilter", name: "Fuel Filter", intervalKm: vehicle.fuel === "diesel" ? 30000 : 40000, intervalMonths: null, type: "replace", notes: vehicle.fuel === "diesel" ? "Diesel — replace every 30k km" : "Petrol — replace every 40k km", category: "fuel" },
+    { id: "exhaustcheck", name: "Exhaust System", intervalKm: 20000, intervalMonths: null, type: "inspect", notes: "Check for leaks, rust, loose hangers", category: "engine" },
+    { id: "tyrereplace", name: "Tyre Condition & Age", intervalKm: 40000, intervalMonths: null, type: "inspect", notes: "Check tread depth (replace under 1.6mm) and age (replace after 5 years)", category: "tyres" },
+    { id: "acservice", name: "AC Service & Refrigerant", intervalKm: null, intervalMonths: 12, type: "inspect", notes: "Check cooling performance and refrigerant level every season", category: "cabin" },
+    { id: "sparkplugs", name: "Spark Plugs", intervalKm: 40000, intervalMonths: null, type: "replace", notes: "Standard plugs 40k · Iridium plugs up to 80k km", category: "engine", skipFor: "diesel" },
+  ];
+
+  if (vehicle.fuel === "diesel") {
+    items.push({ id: "glowplugs", name: "Glow Plugs", intervalKm: 60000, intervalMonths: null, type: "inspect", notes: "Check at 60k km — symptoms: hard starting in cold weather", category: "engine" });
+  }
+
+  if (hasBelt === true) {
+    items.push({ id: "timingbelt", name: "Timing Belt", intervalKm: 60000, intervalMonths: null, type: "replace", notes: "⚠️ CRITICAL — engine damage if missed. Replace at 60k km or 5 years whichever comes first.", category: "engine" });
+  } else if (hasBelt === "unknown") {
+    items.push({ id: "timingbelt", name: "Timing Belt (Verify)", intervalKm: 60000, intervalMonths: null, type: "replace", notes: "❓ Verify with owner manual — petrol cars before 2015 may have a belt. If confirmed chain, disable this item.", category: "engine" });
+  }
+
+  if (vehicle.gearbox === "auto") {
+    items.push({ id: "atfluid", name: "Automatic Transmission Fluid", intervalKm: 60000, intervalMonths: null, type: "replace", notes: "Replace at 60k km — skipping causes expensive damage", category: "transmission" });
+  } else if (vehicle.gearbox === "cvt") {
+    items.push({ id: "cvtfluid", name: "CVT Fluid", intervalKm: 40000, intervalMonths: null, type: "replace", notes: "Replace at 40k km — critical for CVT longevity", category: "transmission" });
+  } else if (vehicle.gearbox === "dct") {
+    items.push({ id: "dctfluid", name: "DCT / DSG Fluid", intervalKm: 60000, intervalMonths: null, type: "replace", notes: "Replace at 60k km — often skipped causing gear hesitation", category: "transmission" });
+  } else {
+    items.push({ id: "gearboxoil", name: "Manual Gearbox Oil", intervalKm: 80000, intervalMonths: null, type: "inspect", notes: "Check level at 80k km — replace if discolored or contaminated", category: "transmission" });
+  }
+
+  return items
+    .filter(i => !i.skipFor || i.skipFor !== vehicle.fuel)
+    .map((item, idx) => ({
+      ...item,
+      order: idx,
+      isBuiltIn: true,
+      isActive: true,
+      lastDoneKm: null,
+      lastDoneDate: null,
+      nextDueKm: item.intervalKm ? (vehicle.odo || 0) + item.intervalKm : null,
+      nextDueDate: item.intervalMonths ? addMonths(new Date(), item.intervalMonths).toISOString().split("T")[0] : null,
+    }));
+}
+
+// ─── SYMPTOMS DATA ────────────────────────────────────────────────────────────
+const SYMPTOM_SYSTEMS = {
+  clutch: {
+    label: "Clutch", icon: "🔄", color: C.purple,
+    symptoms: [
+      "Clutch slipping — engine revs but car doesn't accelerate",
+      "High biting point — pedal nearly fully released before engaging",
+      "Difficulty engaging or changing gears",
+      "Grinding or crunching when shifting gears",
+      "Spongy or soft clutch pedal feel",
+      "Pedal going all the way to the floor",
+      "Burning smell after hill starts or heavy traffic",
+      "Vibration or judder when releasing clutch",
+      "Clutch pedal sticking or not returning properly",
     ]
   },
-  {
-    id: "engine_diesel", label: "Engine Bay — Diesel", icon: "🛢️", engineType: "diesel",
-    items: [
-      { id: "ed1", name: "Engine Oil & Filter", schedule: [1,1,1,1,1,1,1,1,1], type: "R" },
-      { id: "ed2", name: "Drive Belts", schedule: [0,0,0,1,0,0,0,1,0], type: "I" },
-      { id: "ed3", name: "Air Cleaner Filter", schedule: [1,1,2,1,1,2,1,1,2], type: "C/R" },
-      { id: "ed4", name: "Battery Condition", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "ed5", name: "Brake / Clutch Fluid", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "ed6", name: "Engine Coolant", schedule: [1,1,1,1,1,1,1,1,2], type: "I/R", note: "Replace at 90k/6Y" },
-      { id: "ed7", name: "Manual Transaxle Fluid", schedule: [0,0,0,0,0,0,0,1,0], type: "I" },
-      { id: "ed8", name: "Fuel Filter Cartridge", schedule: [0,0,2,0,2,0,2,0,2], type: "R", note: "Diesel only — every 30k km" },
+  gearbox: {
+    label: "Gearbox", icon: "⚙️", color: C.cyan,
+    symptoms: [
+      "Gear popping out on its own — especially 2nd or 3rd",
+      "Grinding or crunching when changing gears",
+      "Difficulty getting into reverse gear",
+      "Whining or humming noise in specific gears",
+      "Gear lever feels loose, wobbly, or vague",
+      "Hard to select gears, especially when engine is cold",
+      "Gearbox making noise when in neutral",
+      "Gear jumps out under hard acceleration",
     ]
   },
-  {
-    id: "on_floor", label: "Vehicle On Floor", icon: "🔩", engineType: "both",
-    items: [
-      { id: "f1", name: "Wiper, Wiper Blade & Washer Fluid", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "f2", name: "Brake/Clutch Pedal Free Play, Pipes & Hoses", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "f3", name: "Fuel Filler Cap", schedule: [0,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "f4", name: "Climate Control Air Filter", schedule: [1,1,2,1,2,1,2,1,2], type: "C/R" },
-      { id: "f5", name: "AC System — Refrigerant & Compressor", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "f6", name: "Cooling System — Water Pump & Hoses", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-    ]
-  },
-  {
-    id: "on_lift", label: "Vehicle On Lift", icon: "🔧", engineType: "both",
-    items: [
-      { id: "l1", name: "Steering Gear, Rack, Linkage & Boots", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l2", name: "Exhaust System — Leakages & Damages", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l3", name: "Fuel Filter (Petrol)", schedule: [0,0,0,1,0,2,0,0,0], type: "I/R" },
-      { id: "l4", name: "Charcoal Canister / Vapour Hose (Petrol)", schedule: [0,0,0,0,0,1,0,0,0], type: "I" },
-      { id: "l5", name: "Front/Rear Suspension — Linkages & Ball Joints", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l6", name: "Fuel Lines, Hoses & Connections", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l7", name: "Drive Shafts & Boots", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l8", name: "Fluid Leakages (General)", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l9", name: "Front & Rear Disc/Drum Brakes & Pads", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l10", name: "Parking Brake Operation", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "l11", name: "Tyre Pressure, Condition & Rotation", schedule: [1,1,1,1,1,1,1,1,1], type: "I+TR" },
-    ]
-  },
-  {
-    id: "final", label: "Final Checks", icon: "✅", engineType: "both",
-    items: [
-      { id: "fc1", name: "Bolts & Nuts on Chassis & Body", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "fc2", name: "Locks & Hinges Lubrication", schedule: [0,1,1,1,1,1,1,1,1], type: "L" },
-      { id: "fc3", name: "All Electrical Systems & Drive Belts/Alternator", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "fc4", name: "Warning Lights & GDS System Check", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "fc5", name: "Exterior/Interior Lights, Horn & Gauges", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "fc6", name: "Power Window & Sunroof Operation", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
-      { id: "fc7", name: "All Seat Belt Operation", schedule: [1,1,1,1,1,1,1,1,1], type: "I" },
+  suspension: {
+    label: "Suspension", icon: "🚗", color: C.yellow,
+    symptoms: [
+      "Car bouncing excessively after going over bumps",
+      "Pulling to one side while driving straight or braking",
+      "Uneven tyre wear — inner or outer edge worn more than center",
+      "Clunking or knocking sound when going over bumps",
+      "Car nose-diving heavily under braking",
+      "Steering feels vague, loose, or imprecise at highway speeds",
+      "Squeaking from corners or wheel area over bumps",
+      "Car sitting noticeably lower on one side",
+      "Excessive body roll when cornering",
     ]
   }
-];
-
-const OBD_PARAMS = [
-  { id: "coolant_temp", name: "Coolant Temp", unit: "°C", min: 85, max: 100, danger: 105, icon: "🌡️", group: "engine" },
-  { id: "rpm", name: "Idle RPM", unit: "rpm", min: 700, max: 900, danger: 1100, icon: "⚙️", group: "engine" },
-  { id: "intake_temp", name: "Intake Air Temp", unit: "°C", min: 20, max: 50, danger: 65, icon: "🌬️", group: "engine" },
-  { id: "engine_load", name: "Engine Load", unit: "%", min: 0, max: 80, danger: 95, icon: "💪", group: "engine" },
-  { id: "throttle_pos", name: "Throttle Position", unit: "%", min: 0, max: 100, danger: null, icon: "🎚️", group: "engine" },
-  { id: "battery_off", name: "Battery (engine off)", unit: "V", min: 12.4, max: 12.7, danger: 12.0, icon: "🔋", group: "electrical" },
-  { id: "battery_on", name: "Battery (engine on)", unit: "V", min: 13.7, max: 14.7, danger: 13.5, icon: "⚡", group: "electrical" },
-  { id: "fuel_trim_st", name: "Fuel Trim ST", unit: "%", min: -5, max: 5, danger: 10, icon: "⛽", group: "fuel" },
-  { id: "fuel_trim_lt", name: "Fuel Trim LT", unit: "%", min: -5, max: 5, danger: 10, icon: "📊", group: "fuel" },
-  { id: "fuel_efficiency", name: "Fuel Efficiency", unit: "km/L", min: 10, max: 20, danger: 7, icon: "🚗", group: "fuel" },
-];
-
-const DTC_CODES = {
-  "P0300": "Random/Multiple Cylinder Misfire Detected",
-  "P0171": "System Too Lean (Bank 1) — check for vacuum leak or MAF issue",
-  "P0172": "System Too Rich (Bank 1) — check O2 sensor or injectors",
-  "P0420": "Catalyst System Efficiency Below Threshold — catalytic converter issue",
-  "P0113": "Intake Air Temperature Sensor High Input",
-  "P0117": "Engine Coolant Temperature Sensor Low Input",
-  "P0301": "Cylinder 1 Misfire Detected",
-  "P0302": "Cylinder 2 Misfire Detected",
-  "P0303": "Cylinder 3 Misfire Detected",
-  "P0304": "Cylinder 4 Misfire Detected",
-  "P0340": "Camshaft Position Sensor Circuit Malfunction",
-  "P0500": "Vehicle Speed Sensor Malfunction",
-  "P0562": "System Voltage Low — check battery/alternator",
-  "P0563": "System Voltage High — check voltage regulator",
-  "P0101": "Mass Air Flow Sensor Range/Performance Problem",
-  "P0401": "EGR Flow Insufficient — common in diesel",
-  "P0087": "Fuel Rail/System Pressure Too Low — diesel fuel pump issue",
 };
 
-const C = {
-  bg: "#0b0e1a", surface: "#131726", card: "#1c2035",
-  border: "#262d47", accent: "#f97316",
-  green: "#22c55e", red: "#ef4444", yellow: "#eab308",
-  blue: "#3b82f6", cyan: "#06b6d4",
-  text: "#e2e8f0", muted: "#64748b", dimmed: "#94a3b8",
-};
-
-const Badge = ({ color, children }) => (
-  <span style={{
-    background: color + "22", color, border: `1px solid ${color}44`,
-    borderRadius: 5, padding: "2px 7px", fontSize: 10, fontWeight: 700,
-    letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap",
-  }}>{children}</span>
+// ─── SHARED UI ────────────────────────────────────────────────────────────────
+const Badge = ({ color, children, small }) => (
+  <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 5, padding: small ? "1px 6px" : "2px 8px", fontSize: small ? 9 : 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{children}</span>
 );
 
-const Btn = ({ onClick, color = C.accent, children, small, outline, disabled }) => (
-  <button onClick={onClick} disabled={disabled} style={{
-    background: outline ? "transparent" : color, color: outline ? color : "#fff",
-    border: `1.5px solid ${color}`, borderRadius: 8,
-    padding: small ? "5px 12px" : "9px 20px", fontSize: small ? 12 : 14,
-    fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.5 : 1, letterSpacing: 0.3,
-  }}>{children}</button>
+const Btn = ({ onClick, color = C.accent, children, small, outline, disabled, full }) => (
+  <button onClick={onClick} disabled={disabled} style={{ background: outline ? "transparent" : color, color: outline ? color : "#fff", border: `1.5px solid ${color}`, borderRadius: 8, padding: small ? "5px 12px" : "9px 20px", fontSize: small ? 11 : 14, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, letterSpacing: 0.3, width: full ? "100%" : "auto", fontFamily: "inherit" }}>{children}</button>
 );
 
-const Input = ({ label, value, onChange, type = "text", placeholder, small }) => (
+const Field = ({ label, value, onChange, type = "text", placeholder, small, required }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-    {label && <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</label>}
+    {label && <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}{required && <span style={{ color: C.red }}> *</span>}</label>}
     <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
       style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: small ? "6px 10px" : "9px 12px", color: C.text, fontSize: small ? 12 : 14, outline: "none", width: "100%", boxSizing: "border-box", fontFamily: "inherit" }} />
   </div>
 );
 
-const Select = ({ label, value, onChange, options }) => (
+const Dropdown = ({ label, value, onChange, options, required }) => (
   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-    {label && <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}</label>}
+    {label && <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>{label}{required && <span style={{ color: C.red }}> *</span>}</label>}
     <select value={value} onChange={e => onChange(e.target.value)} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 14, outline: "none", width: "100%", fontFamily: "inherit" }}>
       {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   </div>
 );
 
-const Modal = ({ open, onClose, title, children }) => {
+const Modal = ({ open, onClose, title, children, wide }) => {
   if (!open) return null;
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#000000aa", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
-      <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: "100%", maxWidth: 520, maxHeight: "88vh", overflowY: "auto", boxShadow: "0 30px 80px #000000aa" }} onClick={e => e.stopPropagation()}>
+    <div style={{ position: "fixed", inset: 0, background: "#000000bb", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+      <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 24, width: "100%", maxWidth: wide ? 640 : 520, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 40px 100px #000000cc" }} onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <span style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{title}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", color: C.muted, fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
@@ -174,686 +206,818 @@ const Modal = ({ open, onClose, title, children }) => {
   );
 };
 
-// ── SCHEDULE PAGE ─────────────────────────────────────────────────────────────
-function SchedulePage({ engineType }) {
-  const [checks, setChecks] = useState({});
-  const [selInterval, setSelInterval] = useState(10);
+const Divider = ({ label }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0" }}>
+    <div style={{ flex: 1, height: 1, background: C.border }} />
+    {label && <span style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.6 }}>{label}</span>}
+    <div style={{ flex: 1, height: 1, background: C.border }} />
+  </div>
+);
+
+// ─── VEHICLE FORM ─────────────────────────────────────────────────────────────
+function VehicleForm({ initial, onSave, onCancel }) {
+  const blank = { make: "", model: "", year: new Date().getFullYear().toString(), fuel: "petrol", gearbox: "manual", timing: "unknown", reg: "", odo: "" };
+  const [form, setForm] = useState(initial || blank);
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  const oilInterval = form.year ? getOilInterval(parseInt(form.year)) : null;
+  const beltStatus = form.year && form.fuel ? needsTimingBelt(parseInt(form.year), form.fuel, form.timing) : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Make (Brand)" required value={form.make} onChange={v => f("make", v)} placeholder="e.g. Hyundai" />
+        <Field label="Model" required value={form.model} onChange={v => f("model", v)} placeholder="e.g. Elite i20" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Year of Manufacture" required type="number" value={form.year} onChange={v => f("year", v)} placeholder="e.g. 2019" />
+        <Field label="Registration No." value={form.reg} onChange={v => f("reg", v)} placeholder="KA 01 AB 1234" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <Dropdown label="Fuel" required value={form.fuel} onChange={v => f("fuel", v)} options={[
+          { value: "petrol", label: "⛽ Petrol" }, { value: "diesel", label: "🛢️ Diesel" },
+          { value: "cng", label: "🟢 CNG" }, { value: "electric", label: "⚡ EV" },
+        ]} />
+        <Dropdown label="Gearbox" required value={form.gearbox} onChange={v => f("gearbox", v)} options={[
+          { value: "manual", label: "Manual" }, { value: "auto", label: "Automatic" },
+          { value: "cvt", label: "CVT" }, { value: "dct", label: "DCT/DSG" }, { value: "amt", label: "AMT" },
+        ]} />
+        <Dropdown label="Timing" value={form.timing} onChange={v => f("timing", v)} options={[
+          { value: "unknown", label: "Don't know" }, { value: "chain", label: "⛓ Chain" }, { value: "belt", label: "🔄 Belt" },
+        ]} />
+      </div>
+      <Field label="Current Odometer (km)" type="number" value={form.odo} onChange={v => f("odo", v)} placeholder="e.g. 42500" />
+
+      {oilInterval && (
+        <div style={{ padding: "12px 14px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.accent, letterSpacing: 0.6, marginBottom: 8 }}>📋 SCHEDULE PREVIEW FOR THIS VEHICLE</div>
+          <div style={{ fontSize: 12, color: C.dimmed, lineHeight: 2 }}>
+            <div>🛢️ Oil change: <span style={{ color: C.text, fontWeight: 700 }}>every {oilInterval / 1000}k km</span> <span style={{ color: C.muted }}>(year {form.year} rule)</span></div>
+            {beltStatus === true && <div style={{ color: C.red }}>⚠️ Timing belt: <span style={{ fontWeight: 700 }}>replace at 60,000 km</span> — engine damage risk if missed</div>}
+            {beltStatus === "unknown" && <div style={{ color: C.yellow }}>❓ Timing type unclear — item added to verify with owner manual</div>}
+            {beltStatus === false && <div style={{ color: C.green }}>✓ Timing chain assumed — no replacement scheduled</div>}
+            <div>⚙️ {form.gearbox === "cvt" ? "CVT fluid: every 40k km" : form.gearbox === "auto" ? "AT fluid: every 60k km" : form.gearbox === "dct" ? "DCT fluid: every 60k km" : form.gearbox === "amt" ? "AMT fluid: check at 80k km" : "Gearbox oil: check at 80k km"}</div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn onClick={() => { if (!form.make || !form.model || !form.year) return; onSave(form); }} color={C.green}>💾 {initial ? "Update Vehicle" : "Add to Garage"}</Btn>
+        <Btn onClick={onCancel} color={C.muted} outline>Cancel</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ─── GARAGE PAGE ──────────────────────────────────────────────────────────────
+function GaragePage({ vehicles, schedules, workshopVisits, onSelect, onAdd, onEdit }) {
+  const getAlerts = (v) => {
+    const items = (schedules[v.id] || []).filter(i => i.isActive);
+    return {
+      overdue: items.filter(i => getItemStatus(i, v.odo) === "overdue").length,
+      dueSoon: items.filter(i => getItemStatus(i, v.odo) === "due-soon").length,
+    };
+  };
+
+  const getNextVisit = (id) => {
+    const upcoming = (workshopVisits[id] || []).filter(v => v.status === "upcoming");
+    if (!upcoming.length) return null;
+    return upcoming.sort((a, b) => new Date(a.tentativeDate) - new Date(b.tentativeDate))[0];
+  };
+
+  return (
+    <div style={{ padding: "16px 12px 80px" }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: -1 }}>
+          <span style={{ color: C.accent }}>Track</span><span style={{ color: C.text }}>N</span><span style={{ color: C.green }}>Save</span>
+        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Track your vehicle · Save on repairs</div>
+      </div>
+
+      {vehicles.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", background: C.surface, borderRadius: 16, border: `1px dashed ${C.border}` }}>
+          <div style={{ fontSize: 56, marginBottom: 16 }}>🚗</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.text, marginBottom: 8 }}>Your garage is empty</div>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 24, lineHeight: 1.6 }}>Add your vehicle to start tracking maintenance and avoid costly repairs</div>
+          <Btn onClick={onAdd}>+ Add Your First Vehicle</Btn>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.7 }}>MY GARAGE — {vehicles.length} VEHICLE{vehicles.length !== 1 ? "S" : ""}</span>
+            <Btn small onClick={onAdd}>+ Add Vehicle</Btn>
+          </div>
+
+          {vehicles.map(v => {
+            const alerts = getAlerts(v);
+            const visit = getNextVisit(v.id);
+            const daysToVisit = visit ? getDaysUntil(visit.tentativeDate) : null;
+            const hColor = alerts.overdue > 0 ? C.red : alerts.dueSoon > 0 ? C.yellow : C.green;
+            const hLabel = alerts.overdue > 0 ? "Overdue" : alerts.dueSoon > 0 ? "Due Soon" : "On Track";
+
+            return (
+              <div key={v.id} style={{ background: C.card, border: `1px solid ${C.border}`, borderLeft: `4px solid ${hColor}`, borderRadius: 14, marginBottom: 12, overflow: "hidden" }}>
+                <div onClick={() => onSelect(v)} style={{ padding: "14px 16px", cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{v.make} {v.model}</div>
+                      <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "wrap", alignItems: "center" }}>
+                        <Badge color={C.blue}>{v.year}</Badge>
+                        <Badge color={v.fuel === "petrol" ? C.accent : v.fuel === "diesel" ? C.yellow : C.green}>{v.fuel}</Badge>
+                        <Badge color={C.muted}>{v.gearbox}</Badge>
+                        {v.reg && <span style={{ fontSize: 11, color: C.muted }}>· {v.reg}</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.dimmed, marginTop: 6 }}>
+                        🚗 {v.odo ? parseInt(v.odo).toLocaleString("en-IN") + " km" : "Odometer not set"}
+                        <span style={{ color: C.muted }}> · Oil every {getOilInterval(v.year) / 1000}k km</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                      <Badge color={hColor}>{hLabel}</Badge>
+                      {alerts.overdue > 0 && <div style={{ fontSize: 10, color: C.red, marginTop: 4 }}>{alerts.overdue} item{alerts.overdue !== 1 ? "s" : ""} overdue</div>}
+                      {alerts.dueSoon > 0 && <div style={{ fontSize: 10, color: C.yellow, marginTop: 2 }}>{alerts.dueSoon} due soon</div>}
+                    </div>
+                  </div>
+
+                  {visit && (
+                    <div style={{ marginTop: 10, padding: "7px 10px", background: C.surface, borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontSize: 11, color: C.dimmed }}>🏪 {visit.workshop || "Workshop visit planned"}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: daysToVisit < 7 ? C.red : daysToVisit < 14 ? C.yellow : C.green }}>
+                        {daysToVisit < 0 ? "Overdue" : daysToVisit === 0 ? "Today!" : `${daysToVisit}d away`}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ borderTop: `1px solid ${C.border}`, display: "flex" }}>
+                  <button onClick={() => onSelect(v)} style={{ flex: 2, background: "none", border: "none", padding: "9px", color: C.accent, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Open Vehicle →</button>
+                  <button onClick={() => onEdit(v)} style={{ flex: 1, background: "none", border: "none", padding: "9px", color: C.muted, fontSize: 11, fontWeight: 600, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>✏️ Edit</button>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── SCHEDULE PAGE ────────────────────────────────────────────────────────────
+function SchedulePage({ vehicle, schedule, onUpdate }) {
+  const [items, setItems] = useState(schedule || []);
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ note: "", date: "", odo: "" });
+  const [selected, setSelected] = useState(null);
+  const [doneForm, setDoneForm] = useState({ date: "", odo: "", cost: "", notes: "", workshop: "" });
+  const [editForm, setEditForm] = useState({});
+  const [filter, setFilter] = useState("all");
+  const [catFilter, setCatFilter] = useState("all");
 
-  useEffect(() => { store.get("schedule_checks").then(d => { if (d) setChecks(d); }); }, []);
+  useEffect(() => setItems(schedule || []), [schedule]);
 
-  const key = (id, km) => `${id}_${km}`;
-  const getStatus = (id, km) => checks[key(id, km)]?.status || "pending";
+  const persist = async (updated) => { setItems(updated); await onUpdate(updated); };
 
-  const openModal = (item, km) => {
-    const ex = checks[key(item.id, km)];
-    setForm({ note: ex?.note || "", date: ex?.date || new Date().toISOString().split("T")[0], odo: ex?.odo || "" });
-    setModal({ item, km });
+  const markDone = async () => {
+    const odo = parseFloat(doneForm.odo) || vehicle.odo || 0;
+    const updated = items.map(i => {
+      if (i.id !== selected.id) return i;
+      return {
+        ...i,
+        lastDoneKm: odo, lastDoneDate: doneForm.date,
+        nextDueKm: i.intervalKm ? odo + i.intervalKm : i.nextDueKm,
+        nextDueDate: i.intervalMonths ? addMonths(new Date(doneForm.date || new Date()), i.intervalMonths).toISOString().split("T")[0] : i.nextDueDate,
+        lastCost: doneForm.cost, lastWorkshop: doneForm.workshop, lastNotes: doneForm.notes,
+      };
+    });
+    await persist(updated); setModal(null);
   };
 
-  const saveStatus = async (status) => {
-    if (!modal) return;
-    const k = key(modal.item.id, modal.km);
-    const updated = { ...checks, [k]: { status, ...form, updatedAt: new Date().toISOString() } };
-    setChecks(updated); await store.set("schedule_checks", updated); setModal(null);
+  const saveEdit = async () => {
+    const updated = items.map(i => i.id === editForm.id ? { ...i, ...editForm, intervalKm: editForm.intervalKm ? parseInt(editForm.intervalKm) : null, intervalMonths: editForm.intervalMonths ? parseInt(editForm.intervalMonths) : null } : i);
+    await persist(updated); setModal(null);
   };
 
-  const filtered = SECTIONS.filter(s => s.engineType === "both" || s.engineType === engineType);
-  const idx = INTERVALS.indexOf(selInterval);
-  const allDue = filtered.flatMap(s => s.items.filter(i => i.schedule[idx] > 0));
-  const done = allDue.filter(i => getStatus(i.id, selInterval) === "done");
-  const pct = allDue.length > 0 ? Math.round((done.length / allDue.length) * 100) : 0;
+  const addItem = async () => {
+    if (!editForm.name) return;
+    const newItem = {
+      id: `custom_${Date.now()}`, name: editForm.name,
+      intervalKm: editForm.intervalKm ? parseInt(editForm.intervalKm) : null,
+      intervalMonths: editForm.intervalMonths ? parseInt(editForm.intervalMonths) : null,
+      type: editForm.type || "inspect", notes: editForm.notes || "",
+      category: editForm.category || "other",
+      isBuiltIn: false, isActive: true,
+      lastDoneKm: null, lastDoneDate: null,
+      nextDueKm: editForm.intervalKm ? (vehicle.odo || 0) + parseInt(editForm.intervalKm) : null,
+      nextDueDate: editForm.intervalMonths ? addMonths(new Date(), parseInt(editForm.intervalMonths)).toISOString().split("T")[0] : null,
+      order: items.length,
+    };
+    await persist([...items, newItem]); setModal(null); setEditForm({});
+  };
 
-  const typeColor = { "R": C.red, "I": C.blue, "C": C.yellow, "C/R": C.accent, "I/R": C.accent, "L": C.green, "I+TR": C.cyan, "—": C.muted };
+  const toggleActive = async (id) => persist(items.map(i => i.id === id ? { ...i, isActive: !i.isActive } : i));
+  const deleteItem = async (id) => persist(items.filter(i => i.id !== id));
+
+  const typeColor = { replace: C.red, inspect: C.blue, clean: C.yellow, rotate: C.cyan, lubricate: C.green };
+  const statusColor = { overdue: C.red, "due-soon": C.yellow, ok: C.green };
+  const cats = ["all", ...new Set(items.map(i => i.category).filter(Boolean))];
+
+  const filtered = items
+    .filter(i => catFilter === "all" || i.category === catFilter)
+    .filter(i => {
+      const s = getItemStatus(i, vehicle.odo);
+      if (filter === "overdue") return s === "overdue";
+      if (filter === "due-soon") return s === "due-soon" || s === "overdue";
+      return true;
+    })
+    .sort((a, b) => {
+      const order = { overdue: 0, "due-soon": 1, ok: 2 };
+      return (order[getItemStatus(a, vehicle.odo)] || 2) - (order[getItemStatus(b, vehicle.odo)] || 2);
+    });
+
+  const overdueN = items.filter(i => i.isActive && getItemStatus(i, vehicle.odo) === "overdue").length;
+  const dueSoonN = items.filter(i => i.isActive && getItemStatus(i, vehicle.odo) === "due-soon").length;
+
+  const EditFields = () => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Field label="Item Name" required value={editForm.name || ""} onChange={v => setEditForm(p => ({ ...p, name: v }))} placeholder="e.g. Differential Oil Check" />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Interval — km (blank if time-based)" type="number" value={editForm.intervalKm || ""} onChange={v => setEditForm(p => ({ ...p, intervalKm: v }))} placeholder="e.g. 10000" />
+        <Field label="Interval — months (blank if km-based)" type="number" value={editForm.intervalMonths || ""} onChange={v => setEditForm(p => ({ ...p, intervalMonths: v }))} placeholder="e.g. 12" />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Dropdown label="Type" value={editForm.type || "inspect"} onChange={v => setEditForm(p => ({ ...p, type: v }))} options={[
+          { value: "inspect", label: "🔍 Inspect" }, { value: "replace", label: "🔄 Replace" },
+          { value: "clean", label: "🧹 Clean" }, { value: "rotate", label: "↻ Rotate" }, { value: "lubricate", label: "💧 Lubricate" },
+        ]} />
+        <Dropdown label="Category" value={editForm.category || "other"} onChange={v => setEditForm(p => ({ ...p, category: v }))} options={[
+          { value: "engine", label: "Engine" }, { value: "brakes", label: "Brakes" }, { value: "tyres", label: "Tyres" },
+          { value: "cabin", label: "Cabin" }, { value: "electrical", label: "Electrical" }, { value: "transmission", label: "Transmission" },
+          { value: "fuel", label: "Fuel" }, { value: "other", label: "Other" },
+        ]} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes</label>
+        <textarea value={editForm.notes || ""} onChange={e => setEditForm(p => ({ ...p, notes: e.target.value }))} rows={3} placeholder="Description, warning signs, what to check for..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ paddingBottom: 80 }}>
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-          <span style={{ fontSize: 11, color: C.muted, fontWeight: 700, letterSpacing: 0.6 }}>SERVICE INTERVAL (km)</span>
-          <span style={{ fontSize: 11, fontWeight: 700, color: pct === 100 ? C.green : pct > 60 ? C.yellow : C.accent }}>{done.length}/{allDue.length} · {pct}%</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{vehicle.make} {vehicle.model} · {vehicle.year}</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+              🚗 {vehicle.odo ? parseInt(vehicle.odo).toLocaleString("en-IN") + " km" : "Odometer not set"} · {items.length} items tracked
+            </div>
+          </div>
+          <Btn small onClick={() => { setEditForm({ name: "", intervalKm: "", intervalMonths: "", type: "inspect", category: "other", notes: "" }); setModal("add"); }}>+ Add Item</Btn>
         </div>
+
+        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+          {[{ k: "all", l: `All (${items.length})`, c: C.blue }, { k: "overdue", l: `Overdue (${overdueN})`, c: C.red }, { k: "due-soon", l: `Due Soon (${dueSoonN})`, c: C.yellow }].map(f => (
+            <button key={f.k} onClick={() => setFilter(f.k)} style={{ background: filter === f.k ? f.c + "22" : "transparent", color: filter === f.k ? f.c : C.muted, border: `1px solid ${filter === f.k ? f.c : C.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{f.l}</button>
+          ))}
+        </div>
+
         <div style={{ display: "flex", gap: 5, overflowX: "auto", paddingBottom: 2 }}>
-          {INTERVALS.map(km => {
-            const ki = INTERVALS.indexOf(km);
-            const kd = filtered.flatMap(s => s.items.filter(i => i.schedule[ki] > 0));
-            const kDone = kd.filter(i => getStatus(i.id, km) === "done");
-            const done100 = kd.length > 0 && kDone.length === kd.length;
+          {cats.map(cat => (
+            <button key={cat} onClick={() => setCatFilter(cat)} style={{ background: catFilter === cat ? C.accent + "22" : "transparent", color: catFilter === cat ? C.accent : C.muted, border: `1px solid ${catFilter === cat ? C.accent : C.border}`, borderRadius: 6, padding: "3px 10px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, textTransform: "capitalize" }}>{cat}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: "12px 12px 0" }}>
+        {filtered.length === 0 && <div style={{ textAlign: "center", padding: "40px 20px", color: C.muted }}>No items match this filter</div>}
+        {filtered.map(item => {
+          const status = getItemStatus(item, vehicle.odo);
+          const kmLeft = item.nextDueKm ? getKmUntilDue(item, vehicle.odo) : null;
+          const daysLeft = item.nextDueDate ? getDaysUntil(item.nextDueDate) : null;
+          const sc = statusColor[status] || C.muted;
+          return (
+            <div key={item.id} style={{ background: C.card, border: `1px solid ${status === "overdue" ? C.red + "55" : C.border}`, borderLeft: `3px solid ${sc}`, borderRadius: 12, marginBottom: 10, opacity: item.isActive ? 1 : 0.4 }}>
+              <div style={{ padding: "12px 14px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: item.isActive ? C.text : C.muted }}>{item.name}</span>
+                      {!item.isBuiltIn && <Badge color={C.purple} small>Custom</Badge>}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
+                      <Badge color={typeColor[item.type] || C.muted}>{item.type}</Badge>
+                      {item.intervalKm && <span style={{ fontSize: 10, color: C.muted }}>Every {item.intervalKm / 1000}k km</span>}
+                      {item.intervalMonths && <span style={{ fontSize: 10, color: C.muted }}>Every {item.intervalMonths} months</span>}
+                    </div>
+                    {item.notes && <div style={{ fontSize: 11, color: C.muted, marginTop: 4, fontStyle: "italic", lineHeight: 1.5 }}>{item.notes}</div>}
+                    {item.lastDoneKm && (
+                      <div style={{ fontSize: 10, color: C.green, marginTop: 5 }}>
+                        ✓ Last done: {parseInt(item.lastDoneKm).toLocaleString("en-IN")} km · {item.lastDoneDate}
+                        {item.lastCost && ` · ₹${parseFloat(item.lastCost).toLocaleString("en-IN")}`}
+                        {item.lastWorkshop && ` · ${item.lastWorkshop}`}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 10 }}>
+                    <Badge color={sc}>{status === "overdue" ? "Overdue" : status === "due-soon" ? "Due Soon" : "OK"}</Badge>
+                    {kmLeft !== null && <div style={{ fontSize: 11, fontWeight: 700, color: sc, marginTop: 4 }}>{kmLeft < 0 ? `${Math.abs(kmLeft).toLocaleString("en-IN")} km over` : `${kmLeft.toLocaleString("en-IN")} km left`}</div>}
+                    {daysLeft !== null && <div style={{ fontSize: 11, fontWeight: 700, color: sc, marginTop: 2 }}>{daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d left`}</div>}
+                    {item.nextDueKm && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Due at {parseInt(item.nextDueKm).toLocaleString("en-IN")} km</div>}
+                  </div>
+                </div>
+              </div>
+              <div style={{ borderTop: `1px solid ${C.border}`, display: "flex" }}>
+                <button onClick={() => { setSelected(item); setDoneForm({ date: new Date().toISOString().split("T")[0], odo: vehicle.odo || "", cost: "", notes: "", workshop: "" }); setModal("done"); }} style={{ flex: 1, background: "none", border: "none", padding: "8px", color: C.green, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Done</button>
+                <button onClick={() => { setEditForm({ ...item, intervalKm: item.intervalKm || "", intervalMonths: item.intervalMonths || "" }); setModal("edit"); }} style={{ flex: 1, background: "none", border: "none", padding: "8px", color: C.blue, fontSize: 11, fontWeight: 600, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>✏️ Edit</button>
+                <button onClick={() => toggleActive(item.id)} style={{ flex: 1, background: "none", border: "none", padding: "8px", color: C.muted, fontSize: 11, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>{item.isActive ? "⊘ Off" : "✓ On"}</button>
+                {!item.isBuiltIn && <button onClick={() => deleteItem(item.id)} style={{ flex: 1, background: "none", border: "none", padding: "8px", color: C.red, fontSize: 11, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>🗑</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Modal open={modal === "done"} onClose={() => setModal(null)} title={`Mark Done: ${selected?.name}`}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Date Done" type="date" value={doneForm.date} onChange={v => setDoneForm(p => ({ ...p, date: v }))} />
+            <Field label="Odometer (km)" type="number" value={doneForm.odo} onChange={v => setDoneForm(p => ({ ...p, odo: v }))} placeholder={vehicle.odo} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Workshop / Dealer" value={doneForm.workshop} onChange={v => setDoneForm(p => ({ ...p, workshop: v }))} placeholder="Workshop name" />
+            <Field label="Cost (₹)" type="number" value={doneForm.cost} onChange={v => setDoneForm(p => ({ ...p, cost: v }))} placeholder="0" />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes / Observations</label>
+            <textarea value={doneForm.notes} onChange={e => setDoneForm(p => ({ ...p, notes: e.target.value }))} rows={3} placeholder="Part brand used, mechanic recommendations, observations..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={markDone} color={C.green}>✓ Save & Update Schedule</Btn>
+            <Btn onClick={() => setModal(null)} color={C.muted} outline>Cancel</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={modal === "edit"} onClose={() => setModal(null)} title={`Edit: ${editForm.name}`}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <EditFields />
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={saveEdit} color={C.green}>💾 Save Changes</Btn>
+            <Btn onClick={() => setModal(null)} color={C.muted} outline>Cancel</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={modal === "add"} onClose={() => setModal(null)} title="Add Custom Item">
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <EditFields />
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={addItem} color={C.green}>+ Add Item</Btn>
+            <Btn onClick={() => setModal(null)} color={C.muted} outline>Cancel</Btn>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// ─── HEALTH PAGE ──────────────────────────────────────────────────────────────
+function HealthPage({ vehicle, symptoms, onUpdate, onPushToWorkshop }) {
+  const [activeSystem, setActiveSystem] = useState("clutch");
+  const [logModal, setLogModal] = useState(null);
+  const [logForm, setLogForm] = useState({ severity: "mild", notes: "", date: new Date().toISOString().split("T")[0], odo: "" });
+  const [historyModal, setHistoryModal] = useState(null);
+
+  const logs = symptoms || {};
+
+  const logSymptom = async (symptomText) => {
+    const entry = { id: Date.now().toString(), system: activeSystem, symptom: symptomText, severity: logForm.severity, notes: logForm.notes, date: logForm.date, odo: logForm.odo || vehicle.odo, workshopFlagged: logForm.severity === "severe" };
+    const updated = { ...logs, [activeSystem]: [entry, ...(logs[activeSystem] || [])] };
+    await onUpdate(updated);
+    if (logForm.severity === "severe") onPushToWorkshop({ system: activeSystem, symptom: symptomText });
+    setLogModal(null);
+    setLogForm({ severity: "mild", notes: "", date: new Date().toISOString().split("T")[0], odo: "" });
+  };
+
+  const getSystemHealth = (key) => {
+    const recent = (logs[key] || []).filter(l => getDaysUntil(l.date) > -90);
+    const severe = recent.filter(l => l.severity === "severe").length;
+    const mod = recent.filter(l => l.severity === "moderate").length;
+    if (severe > 0) return { color: C.red, label: "Urgent" };
+    if (mod >= 2) return { color: C.red, label: "Attention" };
+    if (mod >= 1 || recent.length >= 3) return { color: C.yellow, label: "Monitor" };
+    if (recent.length >= 1) return { color: C.yellow, label: "Watch" };
+    return { color: C.green, label: "OK" };
+  };
+
+  const sys = SYMPTOM_SYSTEMS[activeSystem];
+  const sysLogs = logs[activeSystem] || [];
+  const sysHealth = getSystemHealth(activeSystem);
+
+  return (
+    <div style={{ paddingBottom: 80 }}>
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: 16 }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+          Log symptoms as you notice them. We track patterns and flag when a workshop visit is needed.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {Object.entries(SYMPTOM_SYSTEMS).map(([key, s]) => {
+            const h = getSystemHealth(key);
+            const active = activeSystem === key;
             return (
-              <button key={km} onClick={() => setSelInterval(km)} style={{
-                background: selInterval === km ? C.accent : C.card, color: selInterval === km ? "#fff" : done100 ? C.green : C.muted,
-                border: `1.5px solid ${selInterval === km ? C.accent : done100 ? C.green + "55" : C.border}`,
-                borderRadius: 7, padding: "5px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, position: "relative",
-              }}>
-                {km}k {done100 && "✓"}
+              <button key={key} onClick={() => setActiveSystem(key)} style={{ flex: 1, background: active ? h.color + "18" : C.card, border: `1.5px solid ${active ? h.color : C.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
+                <div style={{ fontSize: 22 }}>{s.icon}</div>
+                <div style={{ fontSize: 10, fontWeight: 800, color: active ? h.color : C.muted, marginTop: 3 }}>{s.label.toUpperCase()}</div>
+                <div style={{ marginTop: 5 }}><Badge color={h.color} small>{h.label}</Badge></div>
+                <div style={{ fontSize: 9, color: C.muted, marginTop: 3 }}>{(logs[key] || []).length} logged</div>
               </button>
             );
           })}
         </div>
-        <div style={{ height: 3, background: C.border, borderRadius: 4, marginTop: 10 }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? C.green : C.accent, borderRadius: 4, transition: "width 0.3s" }} />
-        </div>
       </div>
 
       <div style={{ padding: "12px 12px 0" }}>
-        {filtered.map(section => {
-          const due = section.items.filter(item => item.schedule[idx] > 0);
-          if (due.length === 0) return null;
-          return (
-            <div key={section.id} style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", background: C.surface, borderRadius: "10px 10px 0 0", borderLeft: `3px solid ${C.accent}` }}>
-                <span style={{ fontSize: 15 }}>{section.icon}</span>
-                <span style={{ fontSize: 11, fontWeight: 800, color: C.dimmed, letterSpacing: 0.8 }}>{section.label.toUpperCase()}</span>
-              </div>
-              <div style={{ border: `1px solid ${C.border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
-                {due.map((item, i) => {
-                  const status = getStatus(item.id, selInterval);
-                  const isR = item.schedule[idx] === 2;
-                  const tc = typeColor[item.type] || C.muted;
-                  const closed = checks[key(item.id, selInterval)];
-                  return (
-                    <div key={item.id} onClick={() => openModal(item, selInterval)} style={{
-                      display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
-                      background: i % 2 === 0 ? C.card : C.surface, cursor: "pointer",
-                      borderBottom: i < due.length - 1 ? `1px solid ${C.border}` : "none",
-                    }}>
-                      <div style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, background: status === "done" ? C.green + "22" : status === "skipped" ? C.red + "22" : C.surface, border: `2px solid ${status === "done" ? C.green : status === "skipped" ? C.red : C.border}`, color: status === "done" ? C.green : status === "skipped" ? C.red : C.muted }}>
-                        {status === "done" ? "✓" : status === "skipped" ? "✗" : "○"}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: status === "done" ? C.muted : C.text, textDecoration: status === "done" ? "line-through" : "none" }}>{item.name}</div>
-                        {item.note && <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{item.note}</div>}
-                        {closed?.date && <div style={{ fontSize: 10, color: C.green, marginTop: 2 }}>✓ {closed.date}{closed.odo ? ` · ${closed.odo} km` : ""}{closed.note ? ` · ${closed.note.substring(0, 30)}` : ""}</div>}
-                      </div>
-                      <Badge color={isR ? C.red : tc}>{isR ? "REPLACE" : item.type}</Badge>
-                    </div>
-                  );
-                })}
-              </div>
+        {sysLogs.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.7 }}>RECENT OBSERVATIONS ({sysLogs.length})</span>
+              <button onClick={() => setHistoryModal(activeSystem)} style={{ background: "none", border: "none", color: C.accent, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>View All →</button>
             </div>
-          );
-        })}
-      </div>
-
-      <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.item.name}>
-        {modal && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "flex", gap: 8 }}><Badge color={C.blue}>{modal.km}k km</Badge><Badge color={C.accent}>{modal.item.type}</Badge></div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Input label="Closure Date" type="date" value={form.date} onChange={v => setForm({ ...form, date: v })} />
-              <Input label="Odometer (km)" type="number" value={form.odo} onChange={v => setForm({ ...form, odo: v })} placeholder="42500" />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes / Observations</label>
-              <textarea value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} rows={3} placeholder="Part used, workshop, cost, observations..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Btn onClick={() => saveStatus("done")} color={C.green}>✓ Mark Done</Btn>
-              <Btn onClick={() => saveStatus("skipped")} color={C.red} outline>✗ Skip</Btn>
-              <Btn onClick={() => saveStatus("pending")} color={C.muted} outline>↺ Reset</Btn>
-            </div>
-          </div>
-        )}
-      </Modal>
-    </div>
-  );
-}
-
-// ── REPAIRS PAGE ──────────────────────────────────────────────────────────────
-function RepairsPage() {
-  const [repairs, setRepairs] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const blank = { date: new Date().toISOString().split("T")[0], odo: "", part: "", workshop: "", cost: "", category: "mechanical", notes: "" };
-  const [form, setForm] = useState(blank);
-
-  useEffect(() => { store.get("repairs").then(d => { if (d) setRepairs(d); }); }, []);
-
-  const save = async () => {
-    if (!form.part) return;
-    const updated = editId ? repairs.map(r => r.id === editId ? { ...form, id: editId } : r) : [{ ...form, id: Date.now().toString() }, ...repairs];
-    setRepairs(updated); await store.set("repairs", updated);
-    setShowForm(false); setEditId(null); setForm(blank);
-  };
-
-  const del = async (id) => { const u = repairs.filter(r => r.id !== id); setRepairs(u); await store.set("repairs", u); };
-
-  const catColor = { mechanical: C.accent, electrical: C.blue, ac: C.cyan, body: C.yellow, tyre: C.green, other: C.muted };
-  const totalCost = repairs.reduce((s, r) => s + (parseFloat(r.cost) || 0), 0);
-
-  return (
-    <div style={{ paddingBottom: 80 }}>
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.6 }}>TOTAL REPAIR SPEND</div>
-          <div style={{ fontSize: 26, fontWeight: 900, color: C.accent, letterSpacing: -0.5 }}>₹{totalCost.toLocaleString("en-IN")}</div>
-          <div style={{ fontSize: 11, color: C.muted }}>{repairs.length} entr{repairs.length !== 1 ? "ies" : "y"}</div>
-        </div>
-        <Btn onClick={() => { setShowForm(true); setEditId(null); setForm(blank); }}>+ Log Repair</Btn>
-      </div>
-
-      <div style={{ padding: 12 }}>
-        {repairs.length === 0 && (
-          <div style={{ textAlign: "center", padding: "70px 20px", color: C.muted }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>🔧</div>
-            <div style={{ fontSize: 14, color: C.dimmed }}>No repairs logged yet</div>
-            <div style={{ fontSize: 12, marginTop: 4 }}>Log repairs, part replacements and workshop visits</div>
-          </div>
-        )}
-        {repairs.map(r => (
-          <div key={r.id} style={{ background: C.card, border: `1px solid ${C.border}`, borderLeft: `3px solid ${catColor[r.category] || C.muted}`, borderRadius: 12, padding: 14, marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{r.part}</div>
-                <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <Badge color={catColor[r.category] || C.muted}>{r.category}</Badge>
-                  <span style={{ fontSize: 11, color: C.muted }}>📅 {r.date}</span>
-                  {r.odo && <span style={{ fontSize: 11, color: C.muted }}>🚗 {parseInt(r.odo).toLocaleString("en-IN")} km</span>}
-                </div>
-                {r.workshop && <div style={{ fontSize: 12, color: C.dimmed, marginTop: 5 }}>🏪 {r.workshop}</div>}
-                {r.notes && <div style={{ fontSize: 12, color: C.muted, marginTop: 3, fontStyle: "italic" }}>{r.notes}</div>}
-              </div>
-              <div style={{ textAlign: "right", flexShrink: 0 }}>
-                {r.cost && <div style={{ fontSize: 16, fontWeight: 900, color: C.accent }}>₹{parseFloat(r.cost).toLocaleString("en-IN")}</div>}
-                <div style={{ display: "flex", gap: 5, marginTop: 8 }}>
-                  <Btn small outline color={C.blue} onClick={() => { setForm(r); setEditId(r.id); setShowForm(true); }}>Edit</Btn>
-                  <Btn small outline color={C.red} onClick={() => del(r.id)}>Del</Btn>
-                </div>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <Modal open={showForm} onClose={() => { setShowForm(false); setEditId(null); }} title={editId ? "Edit Repair" : "Log Repair"}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Input label="Part / Work Done *" value={form.part} onChange={v => setForm({ ...form, part: v })} placeholder="e.g. Slave Cylinder Replacement" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Input label="Date *" type="date" value={form.date} onChange={v => setForm({ ...form, date: v })} />
-            <Input label="Odometer (km)" type="number" value={form.odo} onChange={v => setForm({ ...form, odo: v })} placeholder="42500" />
-          </div>
-          <Select label="Category" value={form.category} onChange={v => setForm({ ...form, category: v })} options={[
-            { value: "mechanical", label: "⚙️ Mechanical" }, { value: "electrical", label: "⚡ Electrical" },
-            { value: "ac", label: "❄️ AC / Cooling" }, { value: "body", label: "🚗 Body / Paint" },
-            { value: "tyre", label: "🔄 Tyre / Suspension" }, { value: "other", label: "📋 Other" },
-          ]} />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Input label="Workshop / Dealer" value={form.workshop} onChange={v => setForm({ ...form, workshop: v })} placeholder="Workshop name" />
-            <Input label="Cost (₹)" type="number" value={form.cost} onChange={v => setForm({ ...form, cost: v })} placeholder="12500" />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes</label>
-            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={3} placeholder="Parts used, warranty, observations..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={save} color={C.green}>💾 {editId ? "Update" : "Save Repair"}</Btn>
-            <Btn onClick={() => { setShowForm(false); setEditId(null); }} color={C.muted} outline>Cancel</Btn>
-          </div>
-        </div>
-      </Modal>
-    </div>
-  );
-}
-
-// ── DOCS PAGE ─────────────────────────────────────────────────────────────────
-function DocsPage() {
-  const [docs, setDocs] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [viewing, setViewing] = useState(null);
-  const blank = { name: "", category: "service_bill", date: new Date().toISOString().split("T")[0], notes: "", fileData: null, fileName: null, fileType: null };
-  const [form, setForm] = useState(blank);
-  const fileRef = useRef();
-
-  useEffect(() => { store.get("documents").then(d => { if (d) setDocs(d); }); }, []);
-
-  const handleFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 4 * 1024 * 1024) { alert("File too large. Max 4MB."); return; }
-    const reader = new FileReader();
-    reader.onload = ev => setForm(f => ({ ...f, fileData: ev.target.result, fileName: file.name, fileType: file.type }));
-    reader.readAsDataURL(file);
-  };
-
-  const save = async () => {
-    if (!form.name) return;
-    const updated = [{ ...form, id: Date.now().toString() }, ...docs];
-    setDocs(updated); await store.set("documents", updated);
-    setShowForm(false); setForm(blank);
-  };
-
-  const del = async (id) => { const u = docs.filter(d => d.id !== id); setDocs(u); await store.set("documents", u); };
-
-  const catMeta = {
-    service_bill: { label: "Service Bill", color: C.accent, icon: "🔧" },
-    repair_bill: { label: "Repair Bill", color: C.red, icon: "🛠️" },
-    insurance: { label: "Insurance", color: C.green, icon: "🛡️" },
-    rc: { label: "RC / Registration", color: C.blue, icon: "📋" },
-    puc: { label: "PUC Certificate", color: C.cyan, icon: "💨" },
-    warranty: { label: "Warranty", color: C.yellow, icon: "⭐" },
-    other: { label: "Other", color: C.muted, icon: "📁" },
-  };
-
-  const grouped = {};
-  docs.forEach(d => { if (!grouped[d.category]) grouped[d.category] = []; grouped[d.category].push(d); });
-
-  return (
-    <div style={{ paddingBottom: 80 }}>
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: 12, color: C.muted }}>{docs.length} document{docs.length !== 1 ? "s" : ""} stored</div>
-        <Btn onClick={() => { setShowForm(true); setForm(blank); }}>+ Add Document</Btn>
-      </div>
-
-      {docs.length === 0 && (
-        <div style={{ textAlign: "center", padding: "70px 20px", color: C.muted }}>
-          <div style={{ fontSize: 48, marginBottom: 12 }}>📁</div>
-          <div style={{ fontSize: 14, color: C.dimmed }}>No documents yet</div>
-          <div style={{ fontSize: 12, marginTop: 4 }}>Upload service bills, insurance, RC, PUC and warranty docs</div>
-        </div>
-      )}
-
-      <div style={{ padding: 12 }}>
-        {Object.entries(grouped).map(([cat, catDocs]) => {
-          const meta = catMeta[cat] || catMeta.other;
-          return (
-            <div key={cat} style={{ marginBottom: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-                <span>{meta.icon}</span>
-                <span style={{ fontSize: 10, fontWeight: 800, color: meta.color, letterSpacing: 0.8 }}>{meta.label.toUpperCase()} ({catDocs.length})</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
-                {catDocs.map(doc => (
-                  <div key={doc.id} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", borderTop: `3px solid ${meta.color}` }}>
-                    <div onClick={() => doc.fileData && setViewing(doc)} style={{ cursor: doc.fileData ? "pointer" : "default" }}>
-                      {doc.fileData && doc.fileType?.startsWith("image/") ? (
-                        <div style={{ height: 85, overflow: "hidden" }}><img src={doc.fileData} alt={doc.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
-                      ) : (
-                        <div style={{ height: 85, display: "flex", alignItems: "center", justifyContent: "center", background: C.surface, fontSize: 34, color: meta.color }}>
-                          {doc.fileType?.includes("pdf") ? "📄" : doc.fileData ? "📎" : meta.icon}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ padding: "8px 10px" }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
-                      <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{doc.date}</div>
-                      {doc.notes && <div style={{ fontSize: 10, color: C.muted, marginTop: 2, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.notes}</div>}
-                      <button onClick={() => del(doc.id)} style={{ marginTop: 6, background: "none", border: "none", color: C.red, fontSize: 11, cursor: "pointer", padding: 0 }}>🗑 Delete</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <Modal open={showForm} onClose={() => setShowForm(false)} title="Add Document">
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Input label="Document Name *" value={form.name} onChange={v => setForm({ ...form, name: v })} placeholder="e.g. Service Bill — 40k" />
-          <Select label="Category" value={form.category} onChange={v => setForm({ ...form, category: v })} options={Object.entries(catMeta).map(([k, v]) => ({ value: k, label: `${v.icon} ${v.label}` }))} />
-          <Input label="Date" type="date" value={form.date} onChange={v => setForm({ ...form, date: v })} />
-          <div>
-            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Upload File (Image / PDF · max 4MB)</label>
-            <div style={{ marginTop: 8 }}>
-              <input ref={fileRef} type="file" accept="image/*,.pdf" onChange={handleFile} style={{ display: "none" }} />
-              <Btn onClick={() => fileRef.current.click()} color={C.blue} outline>
-                {form.fileName ? `📎 ${form.fileName.length > 24 ? form.fileName.substring(0, 24) + "…" : form.fileName}` : "📎 Choose File"}
-              </Btn>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes</label>
-            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Amount, validity, remarks..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={save} color={C.green}>💾 Save Document</Btn>
-            <Btn onClick={() => setShowForm(false)} color={C.muted} outline>Cancel</Btn>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal open={!!viewing} onClose={() => setViewing(null)} title={viewing?.name}>
-        {viewing && (
-          <div>
-            {viewing.fileType?.startsWith("image/") && <img src={viewing.fileData} alt={viewing.name} style={{ width: "100%", borderRadius: 8 }} />}
-            {viewing.fileType?.includes("pdf") && (
-              <div style={{ textAlign: "center", padding: 24 }}>
-                <div style={{ fontSize: 48, marginBottom: 12 }}>📄</div>
-                <a href={viewing.fileData} download={viewing.fileName} style={{ color: C.accent, textDecoration: "none", fontSize: 14, fontWeight: 600 }}>⬇️ Download {viewing.fileName}</a>
-              </div>
-            )}
-            {!viewing.fileData && <div style={{ textAlign: "center", color: C.muted, padding: 20 }}>No file attached to this document</div>}
-            {viewing.notes && <div style={{ marginTop: 12, fontSize: 13, color: C.muted, fontStyle: "italic", borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>{viewing.notes}</div>}
-          </div>
-        )}
-      </Modal>
-    </div>
-  );
-}
-
-// ── OBD HEALTH PAGE ───────────────────────────────────────────────────────────
-function OBDPage() {
-  const [readings, setReadings] = useState([]);
-  const [dtcs, setDtcs] = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [showDTC, setShowDTC] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [form, setForm] = useState({});
-  const [dtcForm, setDtcForm] = useState({ code: "", description: "", date: new Date().toISOString().split("T")[0], odo: "", status: "active" });
-  const [csvMsg, setCsvMsg] = useState("");
-  const [activeGroup, setActiveGroup] = useState("engine");
-  const csvRef = useRef();
-
-  useEffect(() => {
-    store.get("obd_readings").then(d => { if (d) setReadings(d); });
-    store.get("obd_dtcs").then(d => { if (d) setDtcs(d); });
-  }, []);
-
-  const getHealth = (param, val) => {
-    if (val === "" || val === undefined || val === null) return "unknown";
-    const v = parseFloat(val); if (isNaN(v)) return "unknown";
-    if (param.danger !== null) {
-      if (param.id.includes("trim")) { if (Math.abs(v) > param.danger) return "danger"; }
-      else if (param.id === "battery_off" || param.id === "battery_on") { if (v < param.danger) return "danger"; }
-      else { if (v >= param.danger) return "danger"; }
-    }
-    return v >= param.min && v <= param.max ? "good" : "warn";
-  };
-
-  const hC = { good: C.green, warn: C.yellow, danger: C.red, unknown: C.muted };
-  const hL = { good: "Normal", warn: "Check", danger: "Alert!", unknown: "N/A" };
-
-  const latest = readings[0] || {};
-  const scored = OBD_PARAMS.map(p => getHealth(p, latest[p.id])).filter(s => s !== "unknown");
-  const score = scored.length === 0 ? null : Math.round((scored.filter(s => s === "good").length / scored.length) * 100);
-  const alerts = OBD_PARAMS.filter(p => ["danger","warn"].includes(getHealth(p, latest[p.id])));
-  const activeDtcs = dtcs.filter(d => d.status === "active");
-
-  const saveReading = async () => {
-    const entry = { ...form, date: form.date || new Date().toISOString().split("T")[0], id: Date.now().toString() };
-    const updated = [entry, ...readings];
-    setReadings(updated); await store.set("obd_readings", updated);
-    setShowForm(false); setForm({});
-  };
-
-  const saveDTC = async () => {
-    if (!dtcForm.code) return;
-    const desc = dtcForm.description || DTC_CODES[dtcForm.code.toUpperCase()] || "Unknown fault code";
-    const updated = [{ ...dtcForm, code: dtcForm.code.toUpperCase(), description: desc, id: Date.now().toString() }, ...dtcs];
-    setDtcs(updated); await store.set("obd_dtcs", updated);
-    setShowDTC(false);
-    setDtcForm({ code: "", description: "", date: new Date().toISOString().split("T")[0], odo: "", status: "active" });
-  };
-
-  const clearDTC = async (id) => { const u = dtcs.map(d => d.id === id ? { ...d, status: "cleared" } : d); setDtcs(u); await store.set("obd_dtcs", u); };
-  const delDTC = async (id) => { const u = dtcs.filter(d => d.id !== id); setDtcs(u); await store.set("obd_dtcs", u); };
-
-  const handleCSV = (e) => {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const lines = ev.target.result.split("\n").filter(l => l.trim());
-        const headers = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/[^a-z0-9]/g, "_"));
-        const paramMap = {
-          "engine_coolant_temperature__c_": "coolant_temp", "engine_coolant_temperature": "coolant_temp",
-          "engine_rpm__rpm_": "rpm", "engine_rpm": "rpm",
-          "battery_voltage__v_": "battery_on", "battery_voltage": "battery_on",
-          "intake_air_temp__c_": "intake_temp", "intake_air_temperature__c_": "intake_temp",
-          "short_term_fuel_trim_bank_1____": "fuel_trim_st", "long_term_fuel_trim_bank_1____": "fuel_trim_lt",
-          "calculated_load_value____": "engine_load", "engine_load____": "engine_load",
-          "absolute_throttle_position____": "throttle_pos",
-          "fuel_economy__mpg_": "fuel_efficiency",
-        };
-        const imported = [];
-        for (let i = 1; i < Math.min(lines.length, 501); i++) {
-          const vals = lines[i].split(",");
-          const entry = { id: `csv_${i}_${Date.now()}`, date: new Date().toISOString().split("T")[0] };
-          headers.forEach((h, idx) => {
-            const mapped = paramMap[h];
-            if (mapped) entry[mapped] = vals[idx]?.trim() || "";
-            if (h.includes("gps_time") || h.includes("device_time")) { const d = vals[idx]?.split(" ")[0]; if (d) entry.date = d; }
-          });
-          imported.push(entry);
-        }
-        const updated = [...imported, ...readings];
-        setReadings(updated); await store.set("obd_readings", updated);
-        setCsvMsg(`✅ Imported ${imported.length} rows from Torque Pro CSV`);
-        setTimeout(() => setCsvMsg(""), 5000);
-      } catch { setCsvMsg("❌ Could not parse. Use Torque Pro / Car Scanner CSV export."); setTimeout(() => setCsvMsg(""), 5000); }
-    };
-    reader.readAsText(file); e.target.value = "";
-  };
-
-  const Sparkline = ({ paramId, color }) => {
-    const data = readings.slice(0, 12).reverse().map((r, i) => ({ x: i, y: parseFloat(r[paramId]) })).filter(d => !isNaN(d.y));
-    if (data.length < 2) return <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>No trend yet</div>;
-    const W = 90, H = 26;
-    const ys = data.map(d => d.y), lo = Math.min(...ys) * 0.98, hi = Math.max(...ys) * 1.02;
-    const px = i => (i / (data.length - 1)) * W;
-    const py = v => H - ((v - lo) / ((hi - lo) || 1)) * H;
-    return (
-      <svg width={W} height={H} style={{ marginTop: 6 }}>
-        <polyline points={data.map((d, i) => `${px(i)},${py(d.y)}`).join(" ")} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" opacity={0.8} />
-        <circle cx={px(data.length - 1)} cy={py(data[data.length - 1].y)} r={2.5} fill={color} />
-      </svg>
-    );
-  };
-
-  const groups = ["engine", "electrical", "fuel"];
-  const filteredParams = OBD_PARAMS.filter(p => p.group === activeGroup);
-
-  return (
-    <div style={{ paddingBottom: 80 }}>
-      {/* Score header */}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-          <div style={{ width: 58, height: 58, borderRadius: "50%", flexShrink: 0, background: `conic-gradient(${score === null ? C.muted : score > 80 ? C.green : score > 50 ? C.yellow : C.red} ${score || 0}%, ${C.border} 0%)`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.surface, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: score === null ? C.muted : score > 80 ? C.green : score > 50 ? C.yellow : C.red }}>
-              {score === null ? "?" : score}
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.6 }}>CAR HEALTH SCORE</div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: C.text }}>
-              {score === null ? "No data yet" : score > 80 ? "🟢 All Good" : score > 50 ? "🟡 Monitor Needed" : "🔴 Attention Required"}
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{readings.length} readings · {activeDtcs.length} active DTC{activeDtcs.length !== 1 ? "s" : ""}</div>
-          </div>
-        </div>
-
-        {alerts.length > 0 && (
-          <div style={{ background: C.red + "11", border: `1px solid ${C.red}33`, borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.red, letterSpacing: 0.5, marginBottom: 4 }}>⚠️ PARAMETERS OUTSIDE NORMAL RANGE</div>
-            {alerts.map(p => <div key={p.id} style={{ fontSize: 12, color: C.dimmed, marginTop: 2 }}>{p.icon} {p.name}: <span style={{ color: hC[getHealth(p, latest[p.id])] }}>{latest[p.id] || "—"} {p.unit}</span></div>)}
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <Btn small onClick={() => setShowForm(true)}>+ Manual Entry</Btn>
-          <Btn small color={C.blue} outline onClick={() => csvRef.current.click()}>📊 Import CSV</Btn>
-          <Btn small color={C.red} outline onClick={() => setShowDTC(true)}>⚠️ Log DTC</Btn>
-          {readings.length > 0 && <Btn small color={C.muted} outline onClick={() => setShowHistory(true)}>📜 History ({readings.length})</Btn>}
-        </div>
-        <input ref={csvRef} type="file" accept=".csv,.CSV" onChange={handleCSV} style={{ display: "none" }} />
-      </div>
-
-      {csvMsg && <div style={{ margin: "8px 12px", padding: "10px 14px", background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}>{csvMsg}</div>}
-
-      <div style={{ margin: "10px 12px 0", padding: "10px 14px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
-        <span style={{ color: C.accent, fontWeight: 700 }}>💡 How to get OBD data:</span> Plug an <span style={{ color: C.text }}>ELM327 Bluetooth dongle</span> into the OBD2 port under your dashboard (driver side). Open <span style={{ color: C.text }}>Torque Pro</span> or <span style={{ color: C.text }}>Car Scanner</span> app, connect, log a trip, then export as CSV → tap <span style={{ color: C.blue }}>Import CSV</span>. Or type readings manually.
-      </div>
-
-      {/* Group tabs */}
-      <div style={{ padding: "12px 12px 0" }}>
-        <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-          {groups.map(g => (
-            <button key={g} onClick={() => setActiveGroup(g)} style={{ background: activeGroup === g ? C.accent : C.card, color: activeGroup === g ? "#fff" : C.muted, border: `1px solid ${activeGroup === g ? C.accent : C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "capitalize", letterSpacing: 0.5 }}>
-              {g === "engine" ? "🔥 Engine" : g === "electrical" ? "⚡ Electrical" : "⛽ Fuel"}
-            </button>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 10 }}>
-          {filteredParams.map(param => {
-            const val = latest[param.id];
-            const health = getHealth(param, val);
-            const color = hC[health];
-            return (
-              <div key={param.id} style={{ background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${health === "danger" ? C.red + "88" : health === "warn" ? C.yellow + "55" : C.border}`, boxShadow: health === "danger" ? `0 0 20px ${C.red}22` : "none" }}>
+            {sysLogs.slice(0, 3).map(log => (
+              <div key={log.id} style={{ background: C.card, borderLeft: `3px solid ${log.severity === "severe" ? C.red : log.severity === "moderate" ? C.yellow : C.green}`, border: `1px solid ${log.severity === "severe" ? C.red + "44" : C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: 20 }}>{param.icon}</span>
-                  <Badge color={color}>{hL[health]}</Badge>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{log.symptom}</div>
+                    {log.notes && <div style={{ fontSize: 11, color: C.muted, marginTop: 3, fontStyle: "italic" }}>{log.notes}</div>}
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>📅 {log.date}{log.odo && ` · 🚗 ${log.odo} km`}</div>
+                  </div>
+                  <Badge color={log.severity === "severe" ? C.red : log.severity === "moderate" ? C.yellow : C.green}>{log.severity}</Badge>
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 6 }}>{param.name}</div>
-                <div style={{ fontSize: 22, fontWeight: 900, color, marginTop: 2, letterSpacing: -0.5 }}>
-                  {val !== undefined && val !== "" ? val : "—"}
-                  <span style={{ fontSize: 11, fontWeight: 400, color: C.muted, marginLeft: 3 }}>{param.unit}</span>
+                {log.workshopFlagged && <div style={{ fontSize: 10, color: C.red, marginTop: 5 }}>⚠️ Flagged for workshop visit</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.7 }}>{sys.icon} {sys.label.toUpperCase()} — TAP A SYMPTOM TO LOG IT</span>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {sys.symptoms.map((symptom, i) => {
+            const recentlyLogged = sysLogs.some(l => l.symptom === symptom && getDaysUntil(l.date) > -30);
+            return (
+              <div key={i} onClick={() => { setLogModal(symptom); setLogForm({ severity: "mild", notes: "", date: new Date().toISOString().split("T")[0], odo: vehicle.odo || "" }); }}
+                style={{ background: recentlyLogged ? C.yellow + "0e" : C.card, border: `1px solid ${recentlyLogged ? C.yellow + "44" : C.border}`, borderRadius: 10, padding: "11px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, color: C.text, flex: 1, lineHeight: 1.4 }}>{symptom}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: 10 }}>
+                  {recentlyLogged && <Badge color={C.yellow} small>Logged</Badge>}
+                  <span style={{ color: C.accent, fontSize: 18, fontWeight: 300, lineHeight: 1 }}>+</span>
                 </div>
-                <Sparkline paramId={param.id} color={color} />
-                <div style={{ marginTop: 5, fontSize: 10, color: C.muted }}>Normal: {param.min}–{param.max} {param.unit}</div>
               </div>
             );
           })}
         </div>
+
+        {sysHealth.label !== "OK" && (
+          <div style={{ marginTop: 16, padding: 14, background: C.red + "0f", border: `1px solid ${C.red}33`, borderRadius: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.red, marginBottom: 8 }}>⚠️ {sys.label} issues detected — workshop visit recommended</div>
+            <Btn small color={C.red} onClick={() => onPushToWorkshop({ system: activeSystem, reason: `${sys.label} symptoms flagged` })}>
+              Schedule Workshop Visit →
+            </Btn>
+          </div>
+        )}
       </div>
 
-      {dtcs.length > 0 && (
-        <div style={{ padding: "16px 12px 0" }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, letterSpacing: 0.8, marginBottom: 10 }}>FAULT CODES (DTCs)</div>
-          {dtcs.map(dtc => (
-            <div key={dtc.id} style={{ background: C.card, borderRadius: 10, padding: 12, marginBottom: 8, border: `1px solid ${dtc.status === "active" ? C.red + "55" : C.border}`, borderLeft: `3px solid ${dtc.status === "active" ? C.red : C.green}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ fontSize: 14, fontWeight: 900, color: dtc.status === "active" ? C.red : C.green }}>{dtc.code}</span>
-                    <Badge color={dtc.status === "active" ? C.red : C.green}>{dtc.status}</Badge>
-                  </div>
-                  <div style={{ fontSize: 12, color: C.dimmed, marginTop: 3 }}>{dtc.description}</div>
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>📅 {dtc.date}{dtc.odo && ` · 🚗 ${dtc.odo} km`}</div>
-                </div>
-                <div style={{ display: "flex", gap: 5, marginLeft: 8 }}>
-                  {dtc.status === "active" && <Btn small color={C.green} outline onClick={() => clearDTC(dtc.id)}>Clear</Btn>}
-                  <Btn small color={C.red} outline onClick={() => delDTC(dtc.id)}>Del</Btn>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Manual Entry */}
-      <Modal open={showForm} onClose={() => setShowForm(false)} title="Manual OBD Reading">
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Input label="Date" type="date" value={form.date || new Date().toISOString().split("T")[0]} onChange={v => setForm({ ...form, date: v })} />
-            <Input label="Odometer (km)" type="number" value={form.odo || ""} onChange={v => setForm({ ...form, odo: v })} placeholder="42500" />
-          </div>
-          <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.5 }}>READINGS (leave blank if not available)</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {OBD_PARAMS.map(p => (
-              <Input key={p.id} small label={`${p.icon} ${p.name} (${p.unit})`} type="number" value={form[p.id] || ""} onChange={v => setForm({ ...form, [p.id]: v })} placeholder={`${p.min}–${p.max}`} />
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={saveReading} color={C.green}>💾 Save Reading</Btn>
-            <Btn onClick={() => setShowForm(false)} color={C.muted} outline>Cancel</Btn>
-          </div>
-        </div>
-      </Modal>
-
-      {/* DTC */}
-      <Modal open={showDTC} onClose={() => setShowDTC(false)} title="Log Fault Code (DTC)">
+      <Modal open={!!logModal} onClose={() => setLogModal(null)} title="Log Symptom Observation">
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Input label="DTC Code (e.g. P0300)" value={dtcForm.code}
-            onChange={v => setDtcForm({ ...dtcForm, code: v, description: DTC_CODES[v.toUpperCase()] || dtcForm.description })}
-            placeholder="P0300" />
-          {DTC_CODES[dtcForm.code?.toUpperCase()] && (
-            <div style={{ background: C.red + "11", border: `1px solid ${C.red}33`, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: C.dimmed }}>⚠️ {DTC_CODES[dtcForm.code.toUpperCase()]}</div>
-          )}
-          <Input label="Description (auto-filled above, edit if needed)" value={dtcForm.description} onChange={v => setDtcForm({ ...dtcForm, description: v })} placeholder="Fault description" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Input label="Date" type="date" value={dtcForm.date} onChange={v => setDtcForm({ ...dtcForm, date: v })} />
-            <Input label="Odometer (km)" type="number" value={dtcForm.odo} onChange={v => setDtcForm({ ...dtcForm, odo: v })} placeholder="42500" />
+          <div style={{ padding: "10px 12px", background: C.surface, borderRadius: 8, fontSize: 13, color: C.text, borderLeft: `3px solid ${sys?.color}`, lineHeight: 1.5 }}>{logModal}</div>
+          <Dropdown label="How bad is it?" value={logForm.severity} onChange={v => setLogForm(p => ({ ...p, severity: v }))} options={[
+            { value: "mild", label: "🟢 Mild — occasional, not affecting drive" },
+            { value: "moderate", label: "🟡 Moderate — noticeable, seems to be getting worse" },
+            { value: "severe", label: "🔴 Severe — affecting safety or driveability" },
+          ]} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Date" type="date" value={logForm.date} onChange={v => setLogForm(p => ({ ...p, date: v }))} />
+            <Field label="Odometer (km)" type="number" value={logForm.odo} onChange={v => setLogForm(p => ({ ...p, odo: v }))} placeholder={vehicle.odo} />
           </div>
-          <Select label="Status" value={dtcForm.status} onChange={v => setDtcForm({ ...dtcForm, status: v })}
-            options={[{ value: "active", label: "🔴 Active — Check Engine Light On" }, { value: "cleared", label: "🟢 Cleared — Already fixed" }]} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Your Observation</label>
+            <textarea value={logForm.notes} onChange={e => setLogForm(p => ({ ...p, notes: e.target.value }))} rows={3} placeholder="When does it happen? How often? Getting worse? Any pattern?" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
+          </div>
+          {logForm.severity === "severe" && (
+            <div style={{ padding: "8px 12px", background: C.red + "11", border: `1px solid ${C.red}33`, borderRadius: 8, fontSize: 12, color: C.red }}>
+              ⚠️ Severe issues are automatically flagged for workshop visit scheduling
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={saveDTC} color={C.red}>⚠️ Log DTC</Btn>
-            <Btn onClick={() => setShowDTC(false)} color={C.muted} outline>Cancel</Btn>
+            <Btn onClick={() => logSymptom(logModal)} color={C.accent}>Log Observation</Btn>
+            <Btn onClick={() => setLogModal(null)} color={C.muted} outline>Cancel</Btn>
           </div>
         </div>
       </Modal>
 
-      {/* History */}
-      <Modal open={showHistory} onClose={() => setShowHistory(false)} title={`Reading History (${readings.length})`}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 420, overflowY: "auto" }}>
-          {readings.slice(0, 50).map(r => (
-            <div key={r.id} style={{ background: C.surface, borderRadius: 8, padding: "9px 12px", border: `1px solid ${C.border}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.dimmed }}>📅 {r.date}</span>
-                {r.odo && <span style={{ fontSize: 10, color: C.muted }}>🚗 {r.odo} km</span>}
-              </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {OBD_PARAMS.filter(p => r[p.id] !== undefined && r[p.id] !== "").map(p => (
-                  <span key={p.id} style={{ fontSize: 11, color: hC[getHealth(p, r[p.id])] }}>{p.icon} {r[p.id]}{p.unit}</span>
-                ))}
+      <Modal open={!!historyModal} onClose={() => setHistoryModal(null)} title={`${SYMPTOM_SYSTEMS[historyModal || "clutch"]?.label} — Full History`}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 420, overflowY: "auto" }}>
+          {(logs[historyModal] || []).length === 0 && <div style={{ textAlign: "center", color: C.muted, padding: 20 }}>No observations logged yet</div>}
+          {(logs[historyModal] || []).map(log => (
+            <div key={log.id} style={{ background: C.surface, borderRadius: 8, padding: "10px 12px", borderLeft: `3px solid ${log.severity === "severe" ? C.red : log.severity === "moderate" ? C.yellow : C.green}` }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{log.symptom}</div>
+              {log.notes && <div style={{ fontSize: 11, color: C.muted, marginTop: 2, fontStyle: "italic" }}>{log.notes}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 5, alignItems: "center" }}>
+                <Badge color={log.severity === "severe" ? C.red : log.severity === "moderate" ? C.yellow : C.green}>{log.severity}</Badge>
+                <span style={{ fontSize: 10, color: C.muted }}>📅 {log.date}{log.odo && ` · 🚗 ${log.odo} km`}</span>
               </div>
             </div>
           ))}
-          {readings.length === 0 && <div style={{ textAlign: "center", color: C.muted, padding: 20 }}>No readings yet</div>}
         </div>
       </Modal>
     </div>
   );
 }
 
-// ── MAIN APP ──────────────────────────────────────────────────────────────────
+// ─── WORKSHOP PAGE ────────────────────────────────────────────────────────────
+function WorkshopPage({ vehicle, visits, schedule, onUpdate }) {
+  const [modal, setModal] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState({});
+  const [actualCost, setActualCost] = useState("");
+
+  const overdueItems = (schedule || []).filter(i => i.isActive && getItemStatus(i, vehicle.odo) === "overdue");
+  const dueSoonItems = (schedule || []).filter(i => i.isActive && getItemStatus(i, vehicle.odo) === "due-soon");
+  const allScheduleItems = (schedule || []).filter(i => i.isActive);
+
+  const blank = () => ({
+    tentativeDate: "", workshop: "", estimatedCost: "",
+    notes: "", items: [...overdueItems.map(i => i.name), ...dueSoonItems.map(i => i.name)],
+    status: "upcoming", symptomReasons: [],
+  });
+
+  const saveVisit = async () => {
+    if (!form.tentativeDate) return;
+    const updated = selected
+      ? visits.map(v => v.id === selected.id ? { ...form, id: selected.id } : v)
+      : [{ ...form, id: Date.now().toString(), createdAt: new Date().toISOString() }, ...visits];
+    await onUpdate(updated); setModal(null); setSelected(null);
+  };
+
+  const completeVisit = async (visitId) => {
+    const updated = visits.map(v => v.id === visitId ? { ...v, status: "completed", completedDate: new Date().toISOString().split("T")[0], actualCost: actualCost || v.estimatedCost } : v);
+    await onUpdate(updated); setModal(null); setActualCost("");
+  };
+
+  const deleteVisit = async (id) => onUpdate(visits.filter(v => v.id !== id));
+
+  const upcoming = visits.filter(v => v.status === "upcoming").sort((a, b) => new Date(a.tentativeDate) - new Date(b.tentativeDate));
+  const completed = visits.filter(v => v.status === "completed").sort((a, b) => new Date(b.completedDate || b.tentativeDate) - new Date(a.completedDate || a.tentativeDate));
+
+  const VisitCard = ({ visit }) => {
+    const daysLeft = getDaysUntil(visit.tentativeDate);
+    const urg = visit.status === "completed" ? C.green : daysLeft < 0 ? C.red : daysLeft < 7 ? C.red : daysLeft < 14 ? C.yellow : C.blue;
+    return (
+      <div style={{ background: C.card, border: `1px solid ${urg + "44"}`, borderLeft: `4px solid ${urg}`, borderRadius: 12, marginBottom: 12, overflow: "hidden" }}>
+        <div style={{ padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                <span style={{ fontSize: 14, fontWeight: 800, color: C.text }}>{visit.status === "completed" ? "✅" : "🏪"} Workshop Visit</span>
+                <Badge color={urg}>{visit.status === "completed" ? "Completed" : daysLeft < 0 ? "Overdue" : "Upcoming"}</Badge>
+              </div>
+              {visit.workshop && <div style={{ fontSize: 12, color: C.dimmed }}>📍 {visit.workshop}</div>}
+              <div style={{ fontSize: 12, color: C.dimmed, marginTop: 3 }}>
+                📅 {visit.status === "completed" ? `Completed ${visit.completedDate || visit.tentativeDate}` : `Planned ${visit.tentativeDate}`}
+                {visit.status !== "completed" && daysLeft !== null && (
+                  <span style={{ color: urg, fontWeight: 700, marginLeft: 6 }}>
+                    {daysLeft < 0 ? `(${Math.abs(daysLeft)}d overdue)` : daysLeft === 0 ? "(Today!)" : `(${daysLeft}d away)`}
+                  </span>
+                )}
+              </div>
+            </div>
+            {(visit.actualCost || visit.estimatedCost) && (
+              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                <div style={{ fontSize: 16, fontWeight: 900, color: C.accent }}>₹{parseFloat(visit.actualCost || visit.estimatedCost).toLocaleString("en-IN")}</div>
+                <div style={{ fontSize: 9, color: C.muted }}>{visit.actualCost ? "actual" : "estimated"}</div>
+              </div>
+            )}
+          </div>
+
+          {visit.items?.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.5, marginBottom: 5 }}>ITEMS ({visit.items.length})</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {visit.items.map((item, i) => <Badge key={i} color={C.blue}>{item}</Badge>)}
+              </div>
+            </div>
+          )}
+
+          {visit.symptomReasons?.length > 0 && (
+            <div style={{ marginTop: 8, padding: "6px 10px", background: C.red + "0f", borderRadius: 6 }}>
+              <div style={{ fontSize: 10, color: C.red, fontWeight: 700, marginBottom: 2 }}>⚠️ SYMPTOM FLAGS</div>
+              {visit.symptomReasons.map((r, i) => <div key={i} style={{ fontSize: 11, color: C.dimmed }}>{r}</div>)}
+            </div>
+          )}
+
+          {visit.notes && <div style={{ fontSize: 12, color: C.muted, marginTop: 8, fontStyle: "italic" }}>{visit.notes}</div>}
+        </div>
+
+        {visit.status !== "completed" && (
+          <div style={{ borderTop: `1px solid ${C.border}`, display: "flex" }}>
+            <button onClick={() => { setSelected(visit); setForm({ ...visit }); setModal("edit"); }} style={{ flex: 1, background: "none", border: "none", padding: "9px", color: C.blue, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✏️ Edit</button>
+            <button onClick={() => { setSelected(visit); setModal("complete"); }} style={{ flex: 1, background: "none", border: "none", padding: "9px", color: C.green, fontSize: 11, fontWeight: 700, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>✓ Complete</button>
+            <button onClick={() => deleteVisit(visit.id)} style={{ flex: 1, background: "none", border: "none", padding: "9px", color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer", borderLeft: `1px solid ${C.border}` }}>🗑 Delete</button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ paddingBottom: 80 }}>
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Workshop Visits</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{upcoming.length} upcoming · {completed.length} completed</div>
+          </div>
+          <Btn small onClick={() => { setForm(blank()); setSelected(null); setModal("edit"); }}>+ Plan Visit</Btn>
+        </div>
+
+        {(overdueItems.length > 0 || dueSoonItems.length > 0) && upcoming.length === 0 && (
+          <div style={{ padding: "10px 12px", background: C.yellow + "0f", border: `1px solid ${C.yellow}44`, borderRadius: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.yellow, marginBottom: 4 }}>💡 Service attention needed</div>
+            {overdueItems.length > 0 && <div style={{ fontSize: 11, color: C.red }}>{overdueItems.length} overdue: {overdueItems.slice(0, 2).map(i => i.name).join(", ")}{overdueItems.length > 2 ? ` +${overdueItems.length - 2} more` : ""}</div>}
+            {dueSoonItems.length > 0 && <div style={{ fontSize: 11, color: C.yellow, marginTop: 2 }}>{dueSoonItems.length} due soon: {dueSoonItems.slice(0, 2).map(i => i.name).join(", ")}{dueSoonItems.length > 2 ? ` +${dueSoonItems.length - 2} more` : ""}</div>}
+            <button onClick={() => { setForm(blank()); setSelected(null); setModal("edit"); }} style={{ marginTop: 8, background: "none", border: "none", color: C.accent, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>Plan a workshop visit now →</button>
+          </div>
+        )}
+      </div>
+
+      <div style={{ padding: "12px 12px 0" }}>
+        {upcoming.length === 0 && completed.length === 0 && (
+          <div style={{ textAlign: "center", padding: "60px 20px", color: C.muted }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏪</div>
+            <div style={{ fontSize: 14, color: C.dimmed, marginBottom: 6 }}>No workshop visits planned</div>
+            <div style={{ fontSize: 12, marginBottom: 20 }}>Plan in advance — avoid emergency repair stress</div>
+            <Btn onClick={() => { setForm(blank()); setSelected(null); setModal("edit"); }}>+ Plan First Visit</Btn>
+          </div>
+        )}
+
+        {upcoming.length > 0 && (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.7, marginBottom: 10 }}>UPCOMING ({upcoming.length})</div>
+            {upcoming.map(v => <VisitCard key={v.id} visit={v} />)}
+          </>
+        )}
+
+        {completed.length > 0 && (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.7, marginBottom: 10, marginTop: upcoming.length > 0 ? 16 : 0 }}>COMPLETED ({completed.length})</div>
+            {completed.map(v => <VisitCard key={v.id} visit={v} />)}
+          </>
+        )}
+      </div>
+
+      {/* Edit/Add Visit Modal */}
+      <Modal open={modal === "edit"} onClose={() => setModal(null)} title={selected ? "Edit Workshop Visit" : "Plan Workshop Visit"} wide>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Planned Date *" type="date" value={form.tentativeDate || ""} onChange={v => setForm(p => ({ ...p, tentativeDate: v }))} required />
+            <Field label="Workshop / Dealer" value={form.workshop || ""} onChange={v => setForm(p => ({ ...p, workshop: v }))} placeholder="Workshop name or location" />
+          </div>
+          <Field label="Estimated Cost (₹)" type="number" value={form.estimatedCost || ""} onChange={v => setForm(p => ({ ...p, estimatedCost: v }))} placeholder="0" />
+
+          <div>
+            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase", display: "block", marginBottom: 8 }}>Items to Address — tap to select</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {allScheduleItems.map(item => {
+                const sel = (form.items || []).includes(item.name);
+                const s = getItemStatus(item, vehicle.odo);
+                const sc = s === "overdue" ? C.red : s === "due-soon" ? C.yellow : C.muted;
+                return (
+                  <button key={item.id} onClick={() => {
+                    const cur = form.items || [];
+                    setForm(p => ({ ...p, items: sel ? cur.filter(i => i !== item.name) : [...cur, item.name] }));
+                  }} style={{ background: sel ? sc + "22" : "transparent", border: `1px solid ${sel ? sc : C.border}`, borderRadius: 6, padding: "4px 10px", fontSize: 11, color: sel ? sc : C.muted, cursor: "pointer", fontWeight: sel ? 700 : 400 }}>
+                    {item.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.7, textTransform: "uppercase" }}>Notes for Workshop</label>
+            <textarea value={form.notes || ""} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} rows={3} placeholder="Instructions, questions to ask, parts to source, concerns to raise..." style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", color: C.text, fontSize: 13, outline: "none", resize: "vertical", fontFamily: "inherit" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn onClick={saveVisit} color={C.green}>💾 {selected ? "Update Visit" : "Save Visit"}</Btn>
+            <Btn onClick={() => setModal(null)} color={C.muted} outline>Cancel</Btn>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Complete Visit Modal */}
+      <Modal open={modal === "complete"} onClose={() => setModal(null)} title="Mark Visit Complete">
+        {selected && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ fontSize: 13, color: C.dimmed, lineHeight: 1.6 }}>This will mark the visit as done and update your records.</div>
+            {selected.items?.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>ITEMS COMPLETED</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {selected.items.map((item, i) => <Badge key={i} color={C.green}>{item}</Badge>)}
+                </div>
+              </div>
+            )}
+            <Field label="Actual Cost (₹)" type="number" value={actualCost} onChange={setActualCost} placeholder={selected.estimatedCost || "0"} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn onClick={() => completeVisit(selected.id)} color={C.green}>✓ Mark as Complete</Btn>
+              <Btn onClick={() => setModal(null)} color={C.muted} outline>Cancel</Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab, setTab] = useState("schedule");
-  const [engineType, setEngineType] = useState("petrol");
-  const [carInfo, setCarInfo] = useState({ name: "My Elite i20", year: "2019", odo: "", reg: "" });
-  const [showCarInfo, setShowCarInfo] = useState(false);
-  const [infoForm, setInfoForm] = useState({});
+  const [vehicles, setVehicles] = useState([]);
+  const [schedules, setSchedules] = useState({});
+  const [symptoms, setSymptoms] = useState({});
+  const [workshopVisits, setWorkshopVisits] = useState({});
+  const [activeVehicleId, setActiveVehicleId] = useState(null);
+  const [tab, setTab] = useState("garage");
+  const [vehicleModal, setVehicleModal] = useState(null);
 
   useEffect(() => {
-    store.get("car_info").then(d => { if (d) setCarInfo(d); });
-    store.get("engine_type").then(d => { if (d) setEngineType(d); });
+    const load = async () => {
+      const v = await store.get("tnv_vehicles"); if (v) setVehicles(v);
+      const s = await store.get("tnv_schedules"); if (s) setSchedules(s);
+      const sym = await store.get("tnv_symptoms"); if (sym) setSymptoms(sym);
+      const w = await store.get("tnv_visits"); if (w) setWorkshopVisits(w);
+    };
+    load();
   }, []);
 
-  const saveCarInfo = async () => {
-    setCarInfo(infoForm); await store.set("car_info", infoForm);
-    if (infoForm.engineType) { setEngineType(infoForm.engineType); await store.set("engine_type", infoForm.engineType); }
-    setShowCarInfo(false);
+  const activeVehicle = vehicles.find(v => v.id === activeVehicleId);
+
+  const saveVehicles = async (v) => { setVehicles(v); await store.set("tnv_vehicles", v); };
+  const saveSchedules = async (s) => { setSchedules(s); await store.set("tnv_schedules", s); };
+  const saveSymptoms = async (s) => { setSymptoms(s); await store.set("tnv_symptoms", s); };
+  const saveVisits = async (v) => { setWorkshopVisits(v); await store.set("tnv_visits", v); };
+
+  const addVehicle = async (form) => {
+    const id = `v_${Date.now()}`;
+    const vehicle = { ...form, id, year: parseInt(form.year), odo: parseFloat(form.odo) || 0 };
+    await saveVehicles([...vehicles, vehicle]);
+    await saveSchedules({ ...schedules, [id]: generateSchedule(vehicle) });
+    setActiveVehicleId(id); setTab("schedule"); setVehicleModal(null);
+  };
+
+  const editVehicle = async (form) => {
+    const vehicle = { ...form, year: parseInt(form.year), odo: parseFloat(form.odo) || 0 };
+    await saveVehicles(vehicles.map(v => v.id === vehicle.id ? vehicle : v));
+    setVehicleModal(null);
   };
 
   const tabs = [
+    { id: "garage", icon: "🏠", label: "Garage" },
     { id: "schedule", icon: "📋", label: "Schedule" },
-    { id: "repairs", icon: "🔧", label: "Repairs" },
-    { id: "docs", icon: "📁", label: "Docs" },
-    { id: "health", icon: "🩺", label: "OBD Health" },
+    { id: "health", icon: "🩺", label: "Health" },
+    { id: "workshop", icon: "🏪", label: "Workshop" },
   ];
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, color: C.text, fontFamily: "'DM Sans', 'Segoe UI', system-ui, sans-serif", maxWidth: 680, margin: "0 auto" }}>
       {/* Top bar */}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "12px 16px", position: "sticky", top: 0, zIndex: 100, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 900, color: C.text, letterSpacing: -0.3 }}>🚗 {carInfo.name}</div>
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>
-            {carInfo.year}{carInfo.reg ? ` · ${carInfo.reg}` : ""} · {engineType === "petrol" ? "⛽ Petrol" : "🛢️ Diesel"}
-            {carInfo.odo ? ` · ${parseInt(carInfo.odo).toLocaleString("en-IN")} km` : ""}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "10px 16px", position: "sticky", top: 0, zIndex: 100, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div onClick={() => setTab("garage")} style={{ cursor: "pointer" }}>
+          <div style={{ fontSize: 16, fontWeight: 900, letterSpacing: -0.5 }}>
+            <span style={{ color: C.accent }}>Track</span><span style={{ color: C.text }}>N</span><span style={{ color: C.green }}>Save</span>
           </div>
+          {activeVehicle && tab !== "garage" && (
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>
+              {activeVehicle.make} {activeVehicle.model} · {activeVehicle.year} · {activeVehicle.odo ? parseInt(activeVehicle.odo).toLocaleString("en-IN") + " km" : "odo not set"}
+            </div>
+          )}
         </div>
-        <button onClick={() => { setInfoForm({ ...carInfo, engineType }); setShowCarInfo(true); }} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "6px 12px", color: C.muted, fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
-          ⚙️ Car Info
-        </button>
+        {tab !== "garage" && activeVehicle && (
+          <button onClick={() => setTab("garage")} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", color: C.muted, fontSize: 10, cursor: "pointer", fontWeight: 600 }}>← Garage</button>
+        )}
       </div>
 
-      {tab === "schedule" && <SchedulePage engineType={engineType} />}
-      {tab === "repairs" && <RepairsPage />}
-      {tab === "docs" && <DocsPage />}
-      {tab === "health" && <OBDPage />}
+      {tab === "garage" && <GaragePage vehicles={vehicles} schedules={schedules} workshopVisits={workshopVisits} onSelect={v => { setActiveVehicleId(v.id); setTab("schedule"); }} onAdd={() => setVehicleModal("add")} onEdit={v => setVehicleModal(v)} />}
+      {tab === "schedule" && activeVehicle && <SchedulePage vehicle={activeVehicle} schedule={schedules[activeVehicleId] || []} onUpdate={u => saveSchedules({ ...schedules, [activeVehicleId]: u })} />}
+      {tab === "health" && activeVehicle && <HealthPage vehicle={activeVehicle} symptoms={symptoms[activeVehicleId] || {}} onUpdate={u => saveSymptoms({ ...symptoms, [activeVehicleId]: u })} onPushToWorkshop={() => setTab("workshop")} />}
+      {tab === "workshop" && activeVehicle && <WorkshopPage vehicle={activeVehicle} visits={workshopVisits[activeVehicleId] || []} schedule={schedules[activeVehicleId] || []} onUpdate={u => saveVisits({ ...workshopVisits, [activeVehicleId]: u })} />}
+
+      {tab !== "garage" && !activeVehicle && (
+        <div style={{ textAlign: "center", padding: "80px 20px", color: C.muted }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🚗</div>
+          <div style={{ fontSize: 14, color: C.dimmed, marginBottom: 16 }}>Select a vehicle first</div>
+          <Btn onClick={() => setTab("garage")} color={C.accent}>← Go to Garage</Btn>
+        </div>
+      )}
 
       {/* Bottom nav */}
       <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 680, background: C.surface, borderTop: `1px solid ${C.border}`, display: "flex", zIndex: 200 }}>
@@ -865,24 +1029,8 @@ export default function App() {
         ))}
       </div>
 
-      {/* Car Info Modal */}
-      <Modal open={showCarInfo} onClose={() => setShowCarInfo(false)} title="Car Information">
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Input label="Car Name / Nickname" value={infoForm.name || ""} onChange={v => setInfoForm({ ...infoForm, name: v })} placeholder="My Elite i20" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Input label="Year" type="number" value={infoForm.year || ""} onChange={v => setInfoForm({ ...infoForm, year: v })} placeholder="2019" />
-            <Input label="Current Odometer (km)" type="number" value={infoForm.odo || ""} onChange={v => setInfoForm({ ...infoForm, odo: v })} placeholder="42500" />
-          </div>
-          <Input label="Registration Number" value={infoForm.reg || ""} onChange={v => setInfoForm({ ...infoForm, reg: v })} placeholder="MH 01 AB 1234" />
-          <Select label="Engine Type" value={infoForm.engineType || "petrol"} onChange={v => setInfoForm({ ...infoForm, engineType: v })} options={[
-            { value: "petrol", label: "⛽ Petrol (1.2L / 1.4L)" },
-            { value: "diesel", label: "🛢️ Diesel (1.4L CRDI)" },
-          ]} />
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn onClick={saveCarInfo} color={C.green}>💾 Save</Btn>
-            <Btn onClick={() => setShowCarInfo(false)} color={C.muted} outline>Cancel</Btn>
-          </div>
-        </div>
+      <Modal open={!!vehicleModal} onClose={() => setVehicleModal(null)} title={vehicleModal === "add" ? "Add Vehicle to Garage" : `Edit — ${vehicleModal?.make} ${vehicleModal?.model}`} wide>
+        <VehicleForm initial={vehicleModal === "add" ? null : vehicleModal} onSave={vehicleModal === "add" ? addVehicle : editVehicle} onCancel={() => setVehicleModal(null)} />
       </Modal>
     </div>
   );
