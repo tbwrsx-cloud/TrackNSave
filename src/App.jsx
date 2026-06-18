@@ -33,6 +33,29 @@ const hasOBD = (v) => isCar(v) || (isTwoWheeler(v) && parseInt(v?.year) >= 2020)
 const VEHICLE_ICONS = { car:"🚗", motorcycle:"🏍️", scooter:"🛵", electric2w:"⚡" };
 const VEHICLE_LABELS = { car:"Car", motorcycle:"Motorcycle", scooter:"Scooter", electric2w:"Electric 2W" };
 
+// ─── SMART ODO CALCULATION ────────────────────────────────────────────────────
+// Accounts for current mileage — discounts km already covered in current cycle
+// e.g. odo=87500, interval=10000 → next due = 90,000 (2,500 km left, not 10,000)
+function calcNextDueKm(odo, intervalKm) {
+  if (!intervalKm) return null;
+  if (!odo || odo === 0) return intervalKm;           // New vehicle — first service
+  const remainder = odo % intervalKm;
+  if (remainder === 0) return odo + intervalKm;       // Perfectly on a milestone
+  return odo + (intervalKm - remainder);              // Next upcoming milestone
+}
+
+// Returns a warning note if a previous milestone was likely missed (no lastDoneKm)
+function getMissedMilestoneNote(odo, intervalKm, nextDueKm) {
+  if (!odo || !intervalKm || !nextDueKm) return "";
+  const prevMilestone = nextDueKm - intervalKm;
+  if (prevMilestone > 0 && prevMilestone < odo) {
+    return ` ⚠️ Previous service was due at ${prevMilestone.toLocaleString("en-IN")} km — verify if completed`;
+  }
+  return "";
+}
+
+
+
 // ─── CAR LOGIC ────────────────────────────────────────────────────────────────
 function getCarOilInterval(year) {
   const y = parseInt(year);
@@ -109,14 +132,20 @@ function generate2WSchedule(vehicle) {
     if (isLiquidCooled) items.push({ id:"evcoolant", name:"Motor Coolant", intervalKm:20000, type:"inspect", notes:"Liquid cooled motor — inspect coolant level and condition", category:"engine" });
   }
 
-  return items.map((item, idx) => ({
-    ...item, order:idx, isBuiltIn:true, isActive:true,
-    intervalKm: item.intervalKm || null,
-    intervalMonths: item.intervalMonths || null,
-    lastDoneKm: null, lastDoneDate: null,
-    nextDueKm: item.intervalKm ? odo + item.intervalKm : null,
-    nextDueDate: item.intervalMonths ? addMonths(new Date(), item.intervalMonths).toISOString().split("T")[0] : null,
-  }));
+  return items.map((item, idx) => {
+    const intervalKm = item.intervalKm || null;
+    const intervalMonths = item.intervalMonths || null;
+    const nextDueKm = intervalKm ? calcNextDueKm(odo, intervalKm) : null;
+    const missedNote = nextDueKm ? getMissedMilestoneNote(odo, intervalKm, nextDueKm) : "";
+    return {
+      ...item, order:idx, isBuiltIn:true, isActive:true,
+      intervalKm, intervalMonths,
+      lastDoneKm: null, lastDoneDate: null,
+      nextDueKm,
+      nextDueDate: intervalMonths ? addMonths(new Date(), intervalMonths).toISOString().split("T")[0] : null,
+      notes: (item.notes || "") + missedNote,
+    };
+  });
 }
 
 // ─── CAR SCHEDULE GENERATOR ───────────────────────────────────────────────────
@@ -152,13 +181,20 @@ function generateCarSchedule(vehicle) {
   else if (vehicle.gearbox === "dct") base.push({ id:"dctfluid", name:"DCT / DSG Fluid", intervalKm:60000, type:"replace", notes:"Replace at 60k — often skipped causing hesitation", category:"transmission" });
   else base.push({ id:"gearboxoil", name:"Manual Gearbox Oil", intervalKm:80000, type:"inspect", notes:"Check level at 80k km", category:"transmission" });
 
-  return base.map((item, idx) => ({
-    ...item, order:idx, isBuiltIn:true, isActive:true,
-    intervalKm:item.intervalKm||null, intervalMonths:item.intervalMonths||null,
-    lastDoneKm:null, lastDoneDate:null,
-    nextDueKm:item.intervalKm?odo+item.intervalKm:null,
-    nextDueDate:item.intervalMonths?addMonths(new Date(),item.intervalMonths).toISOString().split("T")[0]:null,
-  }));
+  return base.map((item, idx) => {
+    const intervalKm = item.intervalKm || null;
+    const intervalMonths = item.intervalMonths || null;
+    const nextDueKm = intervalKm ? calcNextDueKm(odo, intervalKm) : null;
+    const missedNote = nextDueKm ? getMissedMilestoneNote(odo, intervalKm, nextDueKm) : "";
+    return {
+      ...item, order:idx, isBuiltIn:true, isActive:true,
+      intervalKm, intervalMonths,
+      lastDoneKm: null, lastDoneDate: null,
+      nextDueKm,
+      nextDueDate: intervalMonths ? addMonths(new Date(), intervalMonths).toISOString().split("T")[0] : null,
+      notes: (item.notes || "") + missedNote,
+    };
+  });
 }
 
 function generateSchedule(vehicle) {
@@ -237,6 +273,8 @@ function getSymptomSystems(vehicle) {
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function addMonths(date, m) { const d = new Date(date); d.setMonth(d.getMonth() + m); return d; }
+
+
 function getDaysUntil(ds) { if (!ds) return null; return Math.ceil((new Date(ds) - new Date()) / 86400000); }
 function getKmLeft(item, odo) { return item.nextDueKm ? item.nextDueKm - odo : null; }
 function getItemStatus(item, odo) {
@@ -482,7 +520,22 @@ function MaintenancePage({ vehicle, schedule, onUpdate, onPushToWorkshop }) {
   const persist = async (u) => { setItems(u); await onUpdate(u); };
   const markDone = async () => {
     const odo = parseFloat(doneForm.odo)||vehicle.odo||0;
-    const u = items.map(i => i.id!==selected.id ? i : { ...i, lastDoneKm:odo, lastDoneDate:doneForm.date, nextDueKm:i.intervalKm?odo+i.intervalKm:i.nextDueKm, nextDueDate:i.intervalMonths?addMonths(new Date(doneForm.date||new Date()),i.intervalMonths).toISOString().split("T")[0]:i.nextDueDate, lastCost:doneForm.cost, lastWorkshop:doneForm.workshop, lastNotes:doneForm.notes });
+    const u = items.map(i => {
+      if (i.id !== selected.id) return i;
+      // After marking done, clean up any overdue notes and set fresh next due
+      const cleanNotes = (i.notes||"").split(" · Was due at")[0].split(" · Due at")[0];
+      return {
+        ...i,
+        lastDoneKm: odo,
+        lastDoneDate: doneForm.date,
+        nextDueKm: i.intervalKm ? odo + i.intervalKm : i.nextDueKm,
+        nextDueDate: i.intervalMonths ? addMonths(new Date(doneForm.date||new Date()), i.intervalMonths).toISOString().split("T")[0] : i.nextDueDate,
+        lastCost: doneForm.cost,
+        lastWorkshop: doneForm.workshop,
+        lastNotes: doneForm.notes,
+        notes: cleanNotes,
+      };
+    });
     await persist(u); setModal(null);
   };
   const saveEdit = async () => {
