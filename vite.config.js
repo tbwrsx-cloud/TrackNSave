@@ -7,6 +7,12 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      devOptions: {
+        enabled: true
+      },
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}']
+      },
       includeAssets: ['pwa-192.png', 'pwa-512.png'],
       manifest: {
         name: 'TrackNSave',
@@ -20,14 +26,16 @@ export default defineConfig({
         start_url: '/',
         icons: [
           {
-            src: 'pwa-192.png',
+            src: '/pwa-192.png',
             sizes: '192x192',
-            type: 'image/png'
+            type: 'image/png',
+            purpose: 'any'
           },
           {
-            src: 'pwa-512.png',
+            src: '/pwa-512.png',
             sizes: '512x512',
-            type: 'image/png'
+            type: 'image/png',
+            purpose: 'any maskable'
           }
         ]
       }
