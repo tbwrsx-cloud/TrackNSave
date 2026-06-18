@@ -420,7 +420,7 @@ function VehicleForm({ initial, onSave, onCancel }) {
   );
 }
 // ─── GARAGE PAGE ──────────────────────────────────────────────────────────────
-function GaragePage({ vehicles, schedules, visits, onSelect, onAdd, onEdit }) {
+function GaragePage({ vehicles, schedules, visits, onSelect, onAdd, onEdit, onDelete }) {
   const alerts = (v) => {
     const items = (schedules[v.id]||[]).filter(i=>i.isActive);
     return { overdue:items.filter(i=>getItemStatus(i,v.odo)==="overdue").length, dueSoon:items.filter(i=>getItemStatus(i,v.odo)==="due-soon").length };
@@ -497,6 +497,7 @@ function GaragePage({ vehicles, schedules, visits, onSelect, onAdd, onEdit }) {
                 <div style={{ borderTop:`1px solid ${C.border}`, display:"flex" }}>
                   <button onClick={()=>onSelect(v)} style={{ flex:2, background:"none", border:"none", padding:"9px", color:C.accent, fontSize:11, fontWeight:700, cursor:"pointer" }}>Open Vehicle →</button>
                   <button onClick={()=>onEdit(v)} style={{ flex:1, background:"none", border:"none", padding:"9px", color:C.muted, fontSize:11, fontWeight:600, cursor:"pointer", borderLeft:`1px solid ${C.border}` }}>✏️ Edit</button>
+                  <button onClick={()=>onDelete(v.id)} style={{ flex:1, background:"none", border:"none", padding:"9px", color:C.red, fontSize:11, fontWeight:600, cursor:"pointer", borderLeft:`1px solid ${C.border}` }}>🗑 Delete</button>
                 </div>
               </div>
             );
@@ -1352,9 +1353,30 @@ export default function App() {
   useEffect(()=>{
     const load=async()=>{
       const v=await store.get("tnv3_vehicles"); if(v) setVehicles(v);
-      const d=await store.get("tnv3_vehicleData"); if(d) setVehicleData(d);
       const w=await store.get("tnv3_visits"); if(w) setWorkshopVisits(w);
       const doc=await store.get("tnv3_documents"); if(doc) setDocuments(doc);
+      const d=await store.get("tnv3_vehicleData");
+      if (d && v) {
+        // Auto-recalculate schedule items not yet done, using current odo
+        const recalcAll = {};
+        v.forEach(vehicle => {
+          const vd = d[vehicle.id];
+          if (!vd || !vd.schedule) { recalcAll[vehicle.id] = vd || {}; return; }
+          const recalculated = vd.schedule.map(item => {
+            if (item.lastDoneKm) return item;   // Already marked done — keep
+            if (!item.intervalKm) return item;  // Time-based — keep
+            const newNextDueKm = calcNextDueKm(vehicle.odo, item.intervalKm);
+            const missedNote = getMissedMilestoneNote(vehicle.odo, item.intervalKm, newNextDueKm);
+            const cleanNotes = (item.notes||"").split(" ⚠️ Previous")[0];
+            return { ...item, nextDueKm: newNextDueKm, notes: cleanNotes + missedNote };
+          });
+          recalcAll[vehicle.id] = { ...vd, schedule: recalculated };
+        });
+        setVehicleData(recalcAll);
+        await store.set("tnv3_vehicleData", recalcAll);
+      } else if (d) {
+        setVehicleData(d);
+      }
     };
     load();
   },[]);
@@ -1376,7 +1398,36 @@ export default function App() {
   const editVehicle=async(form)=>{
     const vehicle={...form,year:parseInt(form.year),odo:parseFloat(form.odo)||0,liquidCooled:form.liquidCooled===true,manualClutch:form.manualClutch!==false};
     await saveVehicles(vehicles.map(v=>v.id===vehicle.id?vehicle:v));
+    // Recalculate schedule items that haven't been marked done yet
+    const existingData = vehicleData[vehicle.id] || {};
+    const existingSchedule = existingData.schedule || [];
+    if (existingSchedule.length > 0) {
+      const recalculated = existingSchedule.map(item => {
+        // Only recalc items not yet marked done
+        if (item.lastDoneKm) return item; // Already done — keep as is
+        if (!item.intervalKm) return item; // Time-based — keep as is
+        const newNextDueKm = calcNextDueKm(vehicle.odo, item.intervalKm);
+        const missedNote = getMissedMilestoneNote(vehicle.odo, item.intervalKm, newNextDueKm);
+        // Strip old missed notes and add fresh one
+        const cleanNotes = (item.notes||"").split(" ⚠️ Previous")[0];
+        return { ...item, nextDueKm: newNextDueKm, notes: cleanNotes + missedNote };
+      });
+      const updatedData = { ...vehicleData, [vehicle.id]: { ...existingData, schedule: recalculated } };
+      await saveVehicleData(updatedData);
+    }
     setVehicleModal(null);
+  };
+
+  const deleteVehicle=async(id)=>{
+    if (!window.confirm("Delete this vehicle and all its data? This cannot be undone.")) return;
+    await saveVehicles(vehicles.filter(v=>v.id!==id));
+    const newData={...vehicleData}; delete newData[id];
+    await saveVehicleData(newData);
+    const newVisits={...workshopVisits}; delete newVisits[id];
+    await saveVisits(newVisits);
+    const newDocs={...documents}; delete newDocs[id];
+    await saveDocuments(newDocs);
+    if (activeVehicleId===id) { setActiveVehicleId(null); setTab("garage"); }
   };
 
   const tabs=[
@@ -1395,7 +1446,7 @@ export default function App() {
         {tab!=="garage"&&activeVehicle&&<button onClick={()=>setTab("garage")} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:"5px 10px",color:C.muted,fontSize:10,cursor:"pointer",fontWeight:600}}>← Garage</button>}
       </div>
 
-      {tab==="garage"&&<GaragePage vehicles={vehicles} schedules={Object.fromEntries(Object.entries(vehicleData).map(([id,d])=>[id,d.schedule||[]]))} visits={workshopVisits} onSelect={v=>{ setActiveVehicleId(v.id); setTab("health"); }} onAdd={()=>setVehicleModal("add")} onEdit={v=>setVehicleModal(v)} />}
+      {tab==="garage"&&<GaragePage vehicles={vehicles} schedules={Object.fromEntries(Object.entries(vehicleData).map(([id,d])=>[id,d.schedule||[]]))} visits={workshopVisits} onSelect={v=>{ setActiveVehicleId(v.id); setTab("health"); }} onAdd={()=>setVehicleModal("add")} onEdit={v=>setVehicleModal(v)} onDelete={deleteVehicle} />}
       {tab==="health"&&activeVehicle&&<HealthPage vehicle={activeVehicle} data={vehicleData[activeVehicleId]||{schedule:[],obdReadings:[],issues:[],repairs:[],symptoms:{}}} onDataUpdate={u=>{ const nd={...vehicleData,[activeVehicleId]:u}; setVehicleData(nd); store.set("tnv3_vehicleData",nd); }} workshopVisits={workshopVisits[activeVehicleId]||[]} onVisitsUpdate={u=>{ const nv={...workshopVisits,[activeVehicleId]:u}; setWorkshopVisits(nv); store.set("tnv3_visits",nv); }} />}
       {tab==="documents"&&activeVehicle&&<DocumentsPage vehicle={activeVehicle} docs={documents[activeVehicleId]||{}} onUpdate={u=>{ const nd={...documents,[activeVehicleId]:u}; setDocuments(nd); store.set("tnv3_documents",nd); }} />}
       {tab!=="garage"&&!activeVehicle&&<div style={{textAlign:"center",padding:"80px 20px",color:C.muted}}><div style={{fontSize:48,marginBottom:16}}>🚗</div><div style={{fontSize:14,color:C.dimmed,marginBottom:16}}>Select a vehicle from your garage first</div><Btn onClick={()=>setTab("garage")} color={C.accent}>← Go to Garage</Btn></div>}
